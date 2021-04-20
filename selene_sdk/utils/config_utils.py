@@ -208,6 +208,10 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             # load train dataset and loader
             train_config = dataset_info["dataset_args"]
             train_config["intervals"] = train_intervals
+            if "train_transform" in dataset_info:
+                # load transforms
+                train_transform = instantiate(dataset_info["train_transform"])
+                train_config["transform"] = train_transform
             train_dataset = dataset_class(**train_config)
 
             sampler_class = getattr(module, dataset_info["sampler_class"])
