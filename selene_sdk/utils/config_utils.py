@@ -321,6 +321,7 @@ def execute(operations, configs, output_dir):
                     == train_loader.dataset.n_target_features
                 )
 
+            # load model, criterion, and optimizer
             if "criterion" in configs:
                 loss_configs = configs["criterion"]
             else:
@@ -329,6 +330,15 @@ def execute(operations, configs, output_dir):
                 configs["model"], loss_configs, train=True, lr=configs["lr"]
             )
 
+            # load lr scheduler
+            if "lr_scheduler" in configs:
+                scheduler_class = configs["lr_scheduler"]["class"]
+                scheduler_kwargs = configs["lr_scheduler"]["class_args"]
+            else:
+                scheduler_class = None
+                scheduler_kwargs = None
+
+            # instantiate model training class
             train_model_info = configs["train_model"]
             if output_dir is not None:
                 train_model_info.bind(output_dir=output_dir)
@@ -350,6 +360,8 @@ def execute(operations, configs, output_dir):
                     optimizer_kwargs=optim_kwargs,
                     train_loader=train_loader,
                     val_loader=val_loader,
+                    scheduler_class=scheduler_class,
+                    scheduler_kwargs=scheduler_kwargs,
                 )
             train_model = instantiate(train_model_info)
             # TODO: will find a better way to handle this in the future
