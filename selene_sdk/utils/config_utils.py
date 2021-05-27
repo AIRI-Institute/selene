@@ -124,7 +124,8 @@ def initialize_model(model_configs, loss_configs=None, train=True, lr=None):
 
     _is_lua_trained_model(model)
     if loss_configs is not None:
-        criterion = module.criterion(**loss_configs)
+        criterion = instantiate(loss_configs)
+        #criterion = module.criterion(**loss_configs)
     else:
         criterion = module.criterion()
     if train and isinstance(lr, float):
@@ -308,18 +309,19 @@ def execute(operations, configs, output_dir):
                 "dataset" in configs
                 and "n_cell_types" in configs["model"]["class_args"]
             ):
-                assert (
-                    configs["model"]["class_args"]["n_cell_types"]
-                    == train_loader.dataset.n_cell_types
-                )
+                model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
+                dataset_n_cell_types = train_loader.dataset.n_cell_types
+                assert model_n_cell_types == dataset_n_cell_types, f"Expected {dataset_n_cell_types} "\
+                    f"cell types based on dataset, got {model_n_cell_types} in config"
+                
             if (
                 "dataset" in configs
                 and "n_genomic_features" in configs["model"]["class_args"]
             ):
-                assert (
-                    configs["model"]["class_args"]["n_genomic_features"]
-                    == train_loader.dataset.n_target_features
-                )
+                model_n_features = configs["model"]["class_args"]["n_genomic_features"]
+                dataset_n_features = train_loader.dataset.n_target_features
+                assert model_n_features == dataset_n_features, f"Expected {dataset_n_features} "\
+                    f"target features based on dataset, but got {model_n_features} in config"
 
             # load model, criterion, and optimizer
             if "criterion" in configs:
@@ -376,25 +378,39 @@ def execute(operations, configs, output_dir):
 
         elif op == "evaluate":
             if train_model is not None:
-                average_scores, _ = train_model.evaluate()
                 hparam_dict = configs["model"]["class_args"].copy()
-                hparam_dict.update(
-                    {"lr": configs["lr"], "steps": train_model.max_steps}
-                )
+                
+                if "dataset" in configs:
+                    average_scores, _ = train_model.evaluate(test_loader)
+                    hparam_dict.update(
+                        {"lr": configs["lr"], "steps": train_model.n_epochs}
+                    )
+                else:
+                    average_scores, _ = train_model.evaluate()
+                    hparam_dict.update(
+                        {"lr": configs["lr"], "steps": train_model.max_steps}
+                    )
                 with SummaryWriter(os.path.join(output_dir)) as w:
                     w.add_hparams(hparam_dict, average_scores)
 
             if not model:
                 model, loss = initialize_model(configs["model"], train=False)
             if "evaluate_model" in configs:
-                sampler_info = configs["sampler"]
-                sampler = instantiate(sampler_info)
                 evaluate_model_info = configs["evaluate_model"]
-                evaluate_model_info.bind(
-                    model=model, criterion=loss, data_sampler=sampler
-                )
                 if output_dir is not None:
                     evaluate_model_info.bind(output_dir=output_dir)
+
+                if "sampler" in configs:
+                    sampler = create_data_source(configs, output_dir)
+                    evaluate_model_info.bind(
+                        model=model, criterion=loss, data_sampler=sampler
+                    )
+                if "dataset" in configs:
+                    evaluate_model_info.bind(
+                        model=model,
+                        criterion=loss,
+                        data_loader=test_loader,
+                    )
 
                 evaluate_model = instantiate(evaluate_model_info)
                 evaluate_model.evaluate()
@@ -507,7 +523,7 @@ def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=No
 
     current_run_output_dir = None
     if "output_dir" not in configs and (
-        "train" in operations or "evaluate" in operations
+        "train" in operations or ("evaluate" in operations and "sampler" in configs) 
     ):
         print(
             "No top-level output directory specified. All constructors "

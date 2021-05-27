@@ -42,6 +42,7 @@ data : list(float)
 def visualize_roc_curves(prediction,
                          target,
                          output_dir,
+                         target_mask=None,
                          report_gt_feature_n_positives=50,
                          style="seaborn-colorblind",
                          fig_title="Feature ROC curves",
@@ -86,8 +87,18 @@ def visualize_roc_curves(prediction,
 
     plt.style.use(style)
     plt.figure()
-    for index, feature_preds in enumerate(prediction.T):
-        feature_targets = target[:, index]
+
+    n_features = prediction.shape[-1]
+    for index in range(n_features):
+        feature_preds = prediction[..., index]
+        feature_targets = target[..., index]
+        if target_mask is not None:
+            feature_mask = target_mask[..., index]
+            # if mask is n_samples x n_cell_types,
+            # feature_targets and feature_preds get flattened but that's ok
+            # b/c each item is a separate sample anyway
+            feature_targets = feature_targets[feature_mask]
+            feature_preds = feature_preds[feature_mask]
         if len(np.unique(feature_targets)) > 1 and \
                 np.sum(feature_targets) > report_gt_feature_n_positives:
             fpr, tpr, _ = roc_curve(feature_targets, feature_preds)
@@ -107,6 +118,7 @@ def visualize_precision_recall_curves(
         prediction,
         target,
         output_dir,
+        target_mask=None,
         report_gt_feature_n_positives=50,
         style="seaborn-colorblind",
         fig_title="Feature precision-recall curves",
@@ -152,8 +164,18 @@ def visualize_precision_recall_curves(
 
     plt.style.use(style)
     plt.figure()
-    for index, feature_preds in enumerate(prediction.T):
-        feature_targets = target[:, index]
+
+    n_features = prediction.shape[-1]
+    for index in range(n_features):
+        feature_preds = prediction[..., index]
+        feature_targets = target[..., index]
+        if target_mask is not None:
+            feature_mask = target_mask[..., index]
+            # if mask is n_samples x n_cell_types,
+            # feature_targets and feature_preds get flattened but that's ok
+            # b/c each item is a separate sample anyway
+            feature_targets = feature_targets[feature_mask]
+            feature_preds = feature_preds[feature_mask]
         if len(np.unique(feature_targets)) > 1 and \
                 np.sum(feature_targets) > report_gt_feature_n_positives:
             precision, recall, _ = precision_recall_curve(
@@ -202,7 +224,7 @@ def compute_score(prediction, target, metric_fn, target_mask=None,
         no features meeting our filtering thresholds, will return
         `(None, [])`.
     """
-    feature_scores = np.ones(target.shape[1]) * np.nan
+    feature_scores = np.ones(target.shape[-1]) * np.nan
     n_features = prediction.shape[-1]
     for index in range(n_features):
         feature_preds = prediction[..., index]
@@ -405,7 +427,7 @@ class PerformanceMetrics(object):
             metric_scores[name] = avg_score
         return metric_scores
 
-    def visualize(self, prediction, target, output_dir, **kwargs):
+    def visualize(self, prediction, target, output_dir, target_mask=None, **kwargs):
         """
         Outputs ROC and PR curves. Does not support other metrics
         currently.
@@ -438,12 +460,12 @@ class PerformanceMetrics(object):
         os.makedirs(output_dir, exist_ok=True)
         if "roc_auc" in self.metrics:
             visualize_roc_curves(
-                prediction, target, output_dir,
+                prediction, target, output_dir, target_mask,
                 report_gt_feature_n_positives=self.skip_threshold,
                 **kwargs)
         if "average_precision" in self.metrics:
             visualize_precision_recall_curves(
-                prediction, target, output_dir,
+                prediction, target, output_dir, target_mask,
                 report_gt_feature_n_positives=self.skip_threshold,
                 **kwargs)
 
