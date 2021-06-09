@@ -207,7 +207,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
 
         if load_train_val:
             # load train dataset and loader
-            train_config = dataset_info["dataset_args"]
+            train_config = dataset_info["dataset_args"].copy()
             train_config["intervals"] = train_intervals
             if "train_transform" in dataset_info:
                 # load transforms
@@ -231,7 +231,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             )
 
             # load validation dataset and loader
-            val_config = dataset_info["dataset_args"]
+            val_config = dataset_info["dataset_args"].copy()
             val_config["intervals"] = val_intervals
             if "val_transform" in dataset_info:
                 # load transforms
@@ -250,7 +250,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                 return train_loader, val_loader
         if load_test:
             # load test dataset and loader
-            test_config = dataset_info["dataset_args"]
+            test_config = dataset_info["dataset_args"].copy()
             test_config["intervals"] = test_intervals
             if "test_transform" in dataset_info:
                 # load transforms
