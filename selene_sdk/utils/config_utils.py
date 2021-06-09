@@ -233,6 +233,10 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             # load validation dataset and loader
             val_config = dataset_info["dataset_args"]
             val_config["intervals"] = val_intervals
+            if "val_transform" in dataset_info:
+                # load transforms
+                val_transform = instantiate(dataset_info["val_transform"])
+                val_config["transform"] = val_transform
             val_dataset = dataset_class(**val_config)
 
             val_loader = torch.utils.data.DataLoader(
@@ -248,6 +252,10 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             # load test dataset and loader
             test_config = dataset_info["dataset_args"]
             test_config["intervals"] = test_intervals
+            if "test_transform" in dataset_info:
+                # load transforms
+                test_transform = instantiate(dataset_info["test_transform"])
+                test_config["transform"] = test_transform
             test_dataset = dataset_class(**test_config)
 
             test_loader = torch.utils.data.DataLoader(
