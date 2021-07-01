@@ -1,10 +1,13 @@
 """
 Handles outputting the model predictions
 """
-import pyBigWig
 import os
+
+import pyBigWig
 from tqdm import tqdm
+
 from .handler import PredictionsHandler
+
 
 class WritePredictionsMultiCtBigWigHandler(PredictionsHandler):
     """
@@ -37,14 +40,16 @@ class WritePredictionsMultiCtBigWigHandler(PredictionsHandler):
 
     """
 
-    def __init__(self,
-                 features,
-                 big_wig_column_ids,
-                 cell_type_column_id,
-                 cell_type_names,
-                 bw_header,
-                 output_path_prefix,
-                 write_mem_limit=1500):
+    def __init__(
+        self,
+        features,
+        big_wig_column_ids,
+        cell_type_column_id,
+        cell_type_names,
+        bw_header,
+        output_path_prefix,
+        write_mem_limit=1500,
+    ):
         """
         Constructs a new `WritePredictionsHandler` object.
         """
@@ -59,18 +64,17 @@ class WritePredictionsMultiCtBigWigHandler(PredictionsHandler):
         for ct in self._cell_type_names:
             self._handlers[ct] = {}
             for feature in self._features:
-                fname = ct+"_"+feature+".bw"
-                self._handlers[ct][feature] = pyBigWig.open(output_path_prefix+fname,
-                                                            "w")
+                fname = ct + "_" + feature + ".bw"
+                self._handlers[ct][feature] = pyBigWig.open(
+                    output_path_prefix + fname, "w"
+                )
                 self._handlers[ct][feature].addHeader(bw_header)
         self._results = []
         self._samples = []
 
         self._write_mem_limit = write_mem_limit
 
-    def handle_batch_predictions(self,
-                                 batch_predictions,
-                                 batch_ids):
+    def handle_batch_predictions(self, batch_predictions, batch_ids):
         """
         Handles the predictions for a batch of sequences.
 
@@ -99,17 +103,35 @@ class WritePredictionsMultiCtBigWigHandler(PredictionsHandler):
         """
 
         # TODO really not very effective, just a simplest solution for now
-        for batch_ids,batch_predictions in zip(tqdm(self._samples), self._results):
-            for metadata,targets in zip(batch_ids,batch_predictions):
+        for batch_ids, batch_predictions in zip(tqdm(self._samples), self._results):
+            for metadata, targets in zip(batch_ids, batch_predictions):
                 ct = self._cell_type_names[metadata[self._cell_type_column_id]]
                 chrm, start, end = [metadata[i] for i in self._big_wig_column_ids]
-                for feature_id,feature in enumerate(self._features):
-                    self._handlers[ct][feature].addEntries(str(chrm),
-                                                           [int(start+end)//2],
-                                                           #ends=[(int(start)+int(end))//2+1],
-                                                           values=[float(targets[feature_id])],
-                                                           span=1
-                                                           )
+                # print (start, end)
+                for feature_id, feature in enumerate(self._features):
+                    # print (ct, feature, int(start+end)//2,float(targets[feature_id]))
+                    try:
+                        self._handlers[ct][feature].addEntries(
+                            str(chrm),
+                            [int(start + end) // 2],
+                            # ends=[(int(start)+int(end))//2+1],
+                            values=[float(targets[feature_id])],
+                            span=1,
+                        )
+                    except Exception:
+                        import traceback
+
+                        print("Error while writing data:")
+                        print(
+                            str(chrm),
+                            [int(start + end) // 2],
+                            # ends=[(int(start)+int(end))//2+1],
+                            [float(targets[feature_id])],
+                        )
+                        traceback.print_exc()
+                        raise
+        self._results = []
+        self._samples = []
 
     def close_handlers(self):
         """
@@ -123,5 +145,3 @@ class WritePredictionsMultiCtBigWigHandler(PredictionsHandler):
         for i in self._handlers.values():
             for j in i.values():
                 j.close()
-
-
