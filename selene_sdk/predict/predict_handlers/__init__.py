@@ -10,6 +10,7 @@ from .diff_score_handler import DiffScoreHandler
 from .logit_score_handler import LogitScoreHandler
 from .write_predictions_handler import WritePredictionsHandler
 from .write_ref_alt_handler import WriteRefAltHandler
+from .write_multi_ct_handler import WritePredictionsMultiCtBigWigHandler
 
 __all__ = ["PredictionsHandler",
            "write_to_hdf5_file",
@@ -18,4 +19,5 @@ __all__ = ["PredictionsHandler",
            "DiffScoreHandler",
            "LogitScoreHandler",
            "WritePredictionsHandler",
-           "WriteRefAltHandler"]
+           "WriteRefAltHandler",
+           "WritePredictionsMultiCtBigWigHandler"]
