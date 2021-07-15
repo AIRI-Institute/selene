@@ -5,5 +5,6 @@ as a label or annotation on an input sequence.
 """
 from .target import Target
 from .genomic_features import GenomicFeatures
+from .q_genomic_features import qGenomicFeatures
 
-__all__ = ["Target", "GenomicFeatures"]
+__all__ = ["Target", "GenomicFeatures", "qGenomicFeatures"]
