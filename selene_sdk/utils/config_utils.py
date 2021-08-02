@@ -239,13 +239,24 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                 val_config["transform"] = val_transform
             val_dataset = dataset_class(**val_config)
 
+            val_sampler = None
+            if "validation_sampler_class" in dataset_info:
+                val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
+                if "validation_sampler_args" not in dataset_info:
+                    val_sampler_args = {}
+                else:
+                    val_sampler_args = dataset_info["validation_sampler_args"]
+                if not "generator" in val_sampler_args:
+                    val_sampler_args["generator"] = gen
+                val_sampler = val_sampler_class(val_dataset, **val_sampler_args)
+
             val_loader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=dataset_info["loader_args"]["batch_size"],
                 num_workers=dataset_info["loader_args"]["num_workers"],
                 worker_init_fn=module.encode_worker_init_fn,
+                sampler=val_sampler
             )
-
             if not load_test:
                 return train_loader, val_loader
         if load_test:
