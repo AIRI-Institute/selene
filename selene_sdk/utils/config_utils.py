@@ -208,8 +208,13 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
         dataset_info["dataset_args"]["distinct_features"] = distinct_features
 
         # create datasets, samplers, and loaders
-        tasks = ["train","validation","test"]
-        loaders = {}
+        tasks = []
+        if load_train_val:
+            tasks.extend(["train", "validation"])
+        if load_test:
+            tasks.append("test")
+
+        loaders = []
         for task in tasks:
             # create dataset
             task_config = dataset_info["dataset_args"].copy()
@@ -241,14 +246,9 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
                 )
-            loaders[task] = task_loader
+            loaders.append(task_loader)
 
-        if load_train_val and not load_test:
-                return loaders["train"], loaders["validation"]
-        if load_test:
-            if not load_train_val:
-                return loaders["test"]
-        return loaders["train"], loaders["validation"], loaders["test"]
+        return loaders
 
 
 def execute(operations, configs, output_dir):

@@ -10,21 +10,21 @@ class qGenomicFeatures(Target):
     Parameters
     ----------
     features : list(str)
-        non-redundunt fature names
+        non-redundant feature names
     features_path : list(str)
-        locations of coreesponding bigWig files
+        locations of corresponding bigWig files
 
     Attributes
     ----------
-    data : tabix.open
-        The data stored in a tabix-indexed `*.bed` file.
+    features : list(str)
+        non-redundant feature names.
     n_features : int
         The number of distinct features.
     """
 
     def __init__(self, features, features_path):
         """
-        Constructs a new `GenomicFeatures` object.
+        Constructs a new `qGenomicFeatures` object.
         """
 
         self.features =  features
@@ -37,11 +37,9 @@ class qGenomicFeatures(Target):
     def get_feature_data(self, chrom, start, end):
         """
         For a sequence of length :math:`L = end - start`, return the
-        features' one-hot encoding corresponding to that region. For
-        instance, for `n_features`, each position in that sequence will
-        have a binary vector specifying whether the genomic feature's
-        coordinates overlap with that position.
-        @TODO: Clarify with an example, as this is hard to read right now.
+        features' values corresponding to that region. Feature values
+        are means of quantitative feature values computed over the
+        specified interval.
 
         Parameters
         ----------
@@ -55,11 +53,9 @@ class qGenomicFeatures(Target):
         Returns
         -------
         numpy.ndarray
-            :math:`L \\times N` array, where :math:`L = end - start`
-            and :math:`N =` `self.n_features`. Note that if we catch a
-            `tabix.TabixError`, we assume the error was the result of
-            there being no features present in the queried region and
-            return a `numpy.ndarray` of zeros.
+            array of length N, where N is a number of features, and
+            array[i] is a mean of feature signal over the input genomic
+            interval.
 
         """
 
