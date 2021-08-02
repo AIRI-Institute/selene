@@ -38,8 +38,8 @@ class qGenomicFeatures(Target):
         """
         For a sequence of length :math:`L = end - start`, return the
         features' values corresponding to that region. Feature values
-        are integrals of  quantitative feature values defined for each
-        genomic position over the specified interval.
+        are means of quantitative feature values computed over the
+        specified interval.
 
         Parameters
         ----------
@@ -53,8 +53,8 @@ class qGenomicFeatures(Target):
         Returns
         -------
         numpy.ndarray
-            array of length N, where N is a number of features, and.
-            array[i] is a sum of feature signal over the input genomic
+            array of length N, where N is a number of features, and
+            array[i] is a mean of feature signal over the input genomic
             interval.
 
         """
