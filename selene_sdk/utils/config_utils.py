@@ -175,20 +175,22 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
         return sampler
     if "dataset" in configs:
         dataset_info = configs["dataset"]
-        train_intervals = []
-        val_intervals = []
-        test_intervals = []
+        intervals = {
+                     "train":[],
+                     "validation":[],
+                     "test":[]
+                     }
         with open(dataset_info["sampling_intervals_path"]) as f:
             for line in f:
                 chrom, start, end = line.rstrip().split("\t")[:3]
                 start = int(start)
                 end = int(end)
                 if load_train_val and chrom in dataset_info["validation_holdout"]:
-                    val_intervals.append((chrom, start, end))
+                    intervals["validation"].append((chrom, start, end))
                 elif load_test and chrom in dataset_info["test_holdout"]:
-                    test_intervals.append((chrom, start, end))
+                    intervals["test"].append((chrom, start, end))
                 elif load_train_val:
-                    train_intervals.append((chrom, start, end))
+                    intervals["train"].append((chrom, start, end))
 
         with open(dataset_info["distinct_features_path"]) as f:
             distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -205,79 +207,48 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
         dataset_info["dataset_args"]["target_features"] = target_features
         dataset_info["dataset_args"]["distinct_features"] = distinct_features
 
+        # create datasets, samplers, and loaders
+        tasks = []
         if load_train_val:
-            # load train dataset and loader
-            train_config = dataset_info["dataset_args"].copy()
-            train_config["intervals"] = train_intervals
-            if "train_transform" in dataset_info:
-                # load transforms
-                train_transform = instantiate(dataset_info["train_transform"])
-                train_config["transform"] = train_transform
-            train_dataset = dataset_class(**train_config)
-
-            sampler_class = getattr(module, dataset_info["sampler_class"])
-            gen = torch.Generator()
-            gen.manual_seed(configs["random_seed"])
-            train_sampler = sampler_class(
-                train_dataset, replacement=False, generator=gen
-            )
-
-            train_loader = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=dataset_info["loader_args"]["batch_size"],
-                num_workers=dataset_info["loader_args"]["num_workers"],
-                worker_init_fn=module.encode_worker_init_fn,
-                sampler=train_sampler,
-            )
-
-            # load validation dataset and loader
-            val_config = dataset_info["dataset_args"].copy()
-            val_config["intervals"] = val_intervals
-            if "val_transform" in dataset_info:
-                # load transforms
-                val_transform = instantiate(dataset_info["val_transform"])
-                val_config["transform"] = val_transform
-            val_dataset = dataset_class(**val_config)
-
-            val_sampler = None
-            if "validation_sampler_class" in dataset_info:
-                val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
-                if "validation_sampler_args" not in dataset_info:
-                    val_sampler_args = {}
-                else:
-                    val_sampler_args = dataset_info["validation_sampler_args"]
-                if not "generator" in val_sampler_args:
-                    val_sampler_args["generator"] = gen
-                val_sampler = val_sampler_class(val_dataset, **val_sampler_args)
-
-            val_loader = torch.utils.data.DataLoader(
-                val_dataset,
-                batch_size=dataset_info["loader_args"]["batch_size"],
-                num_workers=dataset_info["loader_args"]["num_workers"],
-                worker_init_fn=module.encode_worker_init_fn,
-                sampler=val_sampler
-            )
-            if not load_test:
-                return train_loader, val_loader
+            tasks.extend(["train", "validation"])
         if load_test:
-            # load test dataset and loader
-            test_config = dataset_info["dataset_args"].copy()
-            test_config["intervals"] = test_intervals
-            if "test_transform" in dataset_info:
-                # load transforms
-                test_transform = instantiate(dataset_info["test_transform"])
-                test_config["transform"] = test_transform
-            test_dataset = dataset_class(**test_config)
+            tasks.append("test")
 
-            test_loader = torch.utils.data.DataLoader(
-                test_dataset,
-                batch_size=dataset_info["loader_args"]["batch_size"],
-                num_workers=dataset_info["loader_args"]["num_workers"],
-                worker_init_fn=module.encode_worker_init_fn,
-            )
-            if not load_train_val:
-                return test_loader
-        return train_loader, val_loader, test_loader
+        loaders = []
+        for task in tasks:
+            # create dataset
+            task_config = dataset_info["dataset_args"].copy()
+            task_config["intervals"] = intervals[task]
+            if task+"_transform" in dataset_info:
+                # load transforms
+                transform = instantiate(dataset_info[task+"_transform"])
+                task_config["transform"] = transform
+            task_dataset = dataset_class(**task_config)
+
+            # create sampler
+            sampler = None
+            if task+"_sampler_class" in dataset_info:
+                sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
+                if task+"_sampler_args" not in dataset_info:
+                    sampler_args = {}
+                else:
+                    sampler_args = dataset_info[task+"_sampler_args"]
+                if not "generator" in sampler_args:
+                    gen = torch.Generator()
+                    gen.manual_seed(configs["random_seed"])
+                    sampler_args["generator"] = gen
+                sampler = sampler_class(task_dataset, **sampler_args)
+
+            task_loader = torch.utils.data.DataLoader(
+                    task_dataset,
+                    batch_size=dataset_info["loader_args"]["batch_size"],
+                    num_workers=dataset_info["loader_args"]["num_workers"],
+                    worker_init_fn=module.encode_worker_init_fn,
+                    sampler=sampler,
+                )
+            loaders.append(task_loader)
+
+        return loaders
 
 
 def execute(operations, configs, output_dir):
