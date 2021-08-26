@@ -6,5 +6,11 @@ as a label or annotation on an input sequence.
 from .target import Target
 from .genomic_features import GenomicFeatures
 from .q_genomic_features import qGenomicFeatures
+from .q_seq_genomic_features import qSeqGenomicFeatures
 
-__all__ = ["Target", "GenomicFeatures", "qGenomicFeatures"]
+__all__ = [
+    "Target",
+    "GenomicFeatures",
+    "qGenomicFeatures",
+    "qSeqGenomicFeatures"
+]
