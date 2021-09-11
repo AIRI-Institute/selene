@@ -5,10 +5,13 @@ running operations in _Selene_.
 """
 import os
 import importlib
+import random
 import sys
+import time
 from time import strftime
 import types
-
+from sklearn.model_selection import KFold, GroupKFold, StratifiedKFold
+import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -287,8 +290,10 @@ def execute(operations, configs, output_dir):
             train_loader, val_loader, test_loader = create_data_source(configs,
                                                                        output_dir)
         elif "train" in operations:
-            train_loader, val_loader = create_data_source(configs, output_dir,
-                                                          load_test=False)
+            # crossval
+            train_loader, val_loader = get_loaders(configs)
+            # train_loader, val_loader = create_data_source(configs, output_dir,
+            #                                               load_test=False)
         elif "evaluate" in operations:
             test_loader = create_data_source(configs, load_train_val=False,
                                              load_test=True)
@@ -345,7 +350,14 @@ def execute(operations, configs, output_dir):
                     optimizer_kwargs=optim_kwargs,
                 )
             if "dataset" in configs:
+                ct_mask_idx = np.array_split(
+                    range(configs['model']['class_args']['n_cell_types']), 
+                    configs['dataset']['dataset_args']['n_folds']
+                    )
                 train_model_info.bind(
+                    # configs=configs,
+                    fold=configs['dataset']['dataset_args']['fold'],
+                    ct_mask_idx=ct_mask_idx,
                     model=model,
                     loss_criterion=loss,
                     optimizer_class=optim,
@@ -355,7 +367,10 @@ def execute(operations, configs, output_dir):
                     scheduler_class=scheduler_class,
                     scheduler_kwargs=scheduler_kwargs,
                 )
-            train_model = instantiate(train_model_info)
+            try:
+                train_model = instantiate(train_model_info)
+            except Exception as e:
+                print(e)
             # TODO: will find a better way to handle this in the future
             if (
                 "sampler" in configs
@@ -445,6 +460,148 @@ def execute(operations, configs, output_dir):
             if "prediction" in configs:
                 predict_info = configs["prediction"]
                 analyze_seqs.get_predictions(**predict_info)
+
+
+def interval_from_line(bed_line, pad_left=0, pad_right=0, chrom_counts=None):
+    chrom, start, end = bed_line.rstrip().split('\t')[:3]
+    start = max(0, int(start) - pad_left)
+    if pad_right:
+        end = min(int(end) + pad_right, chrom_counts[chrom])
+    else:
+        end = int(end)
+    return chrom, start, end
+
+
+def get_loaders(configs):
+    """
+    """
+    dataset_info = configs["dataset"]
+
+    # all intervals
+    genome_intervals = []
+    with open(dataset_info["sampling_intervals_path"])  as f:
+        for line in f:
+            chrom, start, end = interval_from_line(line)
+            genome_intervals.append((chrom, start, end))
+
+    # bedug
+    genome_intervals = random.sample(genome_intervals, k=100)
+    print("DEBUG MODE ON:", len(genome_intervals))
+
+    with open(dataset_info["distinct_features_path"]) as f:
+        distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+    with open(dataset_info["target_features_path"]) as f:
+        target_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    dataset_class = getattr(module, dataset_info["class"])
+    dataset_info["dataset_args"]["target_features"] = target_features
+    dataset_info["dataset_args"]["distinct_features"] = distinct_features
+
+    # load train dataset and loader
+    data_config = dataset_info["dataset_args"].copy()
+    data_config["intervals"] = genome_intervals
+
+    genome_intervals_arr, tr_idx_list, val_idx_list = get_fold_idx(
+        genome_intervals,  
+        configs,
+        )
+
+    # train/val split
+    tr_idx = tr_idx_list[dataset_info["dataset_args"]["fold"]]
+    val_idx = val_idx_list[dataset_info["dataset_args"]["fold"]]
+    train_intervals = genome_intervals_arr[tr_idx].tolist()
+    val_intervals = genome_intervals_arr[val_idx].tolist()
+
+    train_config = dataset_info["dataset_args"].copy()
+    del train_config['fold']
+    del train_config['n_folds']
+    train_config["intervals"] = train_intervals
+    if "train_transform" in dataset_info:
+        # load transforms
+        train_transform = instantiate(dataset_info["train_transform"])
+        train_config["transform"] = train_transform
+    train_dataset = dataset_class(**train_config)
+
+    sampler_class = getattr(module, dataset_info["sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    train_sampler = sampler_class(
+        train_dataset, replacement=False, generator=gen
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.encode_worker_init_fn,
+        sampler=train_sampler,
+    )
+
+    # load validation dataset and loader
+    val_config = dataset_info["dataset_args"].copy()
+    del val_config['fold']
+    del val_config['n_folds']
+    val_config["intervals"] = val_intervals
+    if "val_transform" in dataset_info:
+        # load transforms
+        val_transform = instantiate(dataset_info["val_transform"])
+        val_config["transform"] = val_transform
+    val_dataset = dataset_class(**val_config)
+
+    val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    val_sampler = val_sampler_class(
+        data_source=val_dataset, 
+        num_samples=dataset_info['validation_sampler_args']['num_samples'], 
+        generator=gen
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.encode_worker_init_fn,
+        sampler=val_sampler,
+    )
+
+    # out = {
+    #     'genome_intervals': genome_intervals_arr, 
+    #     'train_idx': tr_idx_list,
+    #     'val_idx': val_idx_list,
+    #     'train_loader': train_loader, 
+    #     'val_loader': val_loader,
+    # }
+
+    print(len(train_loader), len(val_loader))
+
+    return train_loader, val_loader
+
+
+def get_fold_idx(genome_intervals, configs):
+
+    genome_intervals_arr = np.asarray(genome_intervals, dtype='U10,i8,i8')
+
+    k_fold = KFold(
+        configs['dataset']['dataset_args']['n_folds'], 
+        shuffle=False, 
+        # random_state=configs['random_seed'],
+    )
+    tr_idx_list = []
+    val_idx_list = []
+
+    for _, (tr_idx, val_idx) in enumerate(k_fold.split(genome_intervals_arr)):
+        tr_idx_list.append(tr_idx)
+        val_idx_list.append(val_idx)
+
+    return genome_intervals_arr, tr_idx_list, val_idx_list   
 
 
 def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=None):

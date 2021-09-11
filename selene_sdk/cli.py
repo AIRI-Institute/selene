@@ -15,6 +15,8 @@ import click
 
 from selene_sdk import __version__
 from selene_sdk.utils import load_path, parse_configs_and_run
+import warnings
+warnings.filterwarnings("ignore") 
 
 
 @click.command()
