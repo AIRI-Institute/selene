@@ -17,7 +17,7 @@ from scipy.stats import rankdata
 logger = logging.getLogger("selene")
 
 
-Metric = namedtuple("Metric", ["fn", "data"])
+Metric = namedtuple("Metric", ["fn", "transform", "data"])
 """
 A tuple containing a metric function and the results from applying that
 metric to some values.
@@ -309,7 +309,6 @@ def auc_u_test(labels, predictions):
     auc = u_value / (len_pos * len_neg)
     return auc
 
-
 class PerformanceMetrics(object):
     """
     Tracks and calculates metrics to evaluate how closely a model's
@@ -344,13 +343,17 @@ class PerformanceMetrics(object):
         A dictionary that maps metric names (`str`) to metric objects
         (`Metric`). By default, this contains `"roc_auc"` and
         `"average_precision"`.
-
+    metrics_transforms: dict
+        A dictioary mapping metrics name to transformation function,
+        which should be applied tp to data prior to metrics computation.
     """
 
     def __init__(self,
                  get_feature_from_index_fn,
                  report_gt_feature_n_positives=10,
-                 metrics=dict(roc_auc=roc_auc_score, average_precision=average_precision_score)):
+                 metrics=dict(roc_auc=roc_auc_score, average_precision=average_precision_score),
+                 metrics_transforms=dict(roc_auc=None, 
+                                         average_precision=None)):
         """
         Creates a new object of the `PerformanceMetrics` class.
         """
@@ -358,9 +361,16 @@ class PerformanceMetrics(object):
         self.get_feature_from_index = get_feature_from_index_fn
         self.metrics = dict()
         for k, v in metrics.items():
-            self.metrics[k] = Metric(fn=v, data=[])
+            if k in metrics_transforms:
+                self.metrics[k] = Metric(fn=v, 
+                                         transform=metrics_transforms[k],
+                                         data=[])
+            else:
+                self.metrics[k] = Metric(fn=v, 
+                                         transform=None,
+                                         data=[])
 
-    def add_metric(self, name, metric_fn):
+    def add_metric(self, name, metric_fn, transform_function = None):
         """
         Begins tracking of the specified metric.
 
@@ -370,9 +380,14 @@ class PerformanceMetrics(object):
             The name of the metric.
         metric_fn : types.FunctionType
             A metric function.
-
+        transform_function: types.FunctionType
+            A tranform function which should be
+            applied to data before metrics computation
+            if None, no transform will be applied
         """
-        self.metrics[name] = Metric(fn=metric_fn, data=[])
+        self.metrics[name] = Metric(fn=metric_fn, 
+                                        transform=transform_function,
+                                        data=[])
 
     def remove_metric(self, name):
         """
@@ -420,8 +435,13 @@ class PerformanceMetrics(object):
         """
         metric_scores = {}
         for name, metric in self.metrics.items():
+            if metric.transform is not None:
+                tr_prediction, tr_target, tr_target_mask = metric.transform((prediction, target, target_mask))
+            else:
+                tr_prediction, tr_target, tr_target_mask = prediction, target, target_mask
+            assert tr_prediction.shape == tr_target.shape == tr_target_mask.shape
             avg_score, feature_scores = compute_score(
-                prediction, target, metric.fn, target_mask=target_mask,
+                tr_prediction, tr_target, metric.fn, target_mask=tr_target_mask,
                 report_gt_feature_n_positives=self.skip_threshold)
             metric.data.append(feature_scores)
             metric_scores[name] = avg_score
@@ -457,6 +477,8 @@ class PerformanceMetrics(object):
             Outputs figures to `output_dir`.
 
         """
+        print ("This function is not consistent with new transform functions")
+        raise NotImplementedError
         os.makedirs(output_dir, exist_ok=True)
         if "roc_auc" in self.metrics:
             visualize_roc_curves(
