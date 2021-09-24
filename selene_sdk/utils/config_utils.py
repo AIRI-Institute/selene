@@ -7,6 +7,7 @@ import json
 import os
 import importlib
 import random
+# from src.utils import get_full_dl
 import sys
 import time
 from time import strftime
@@ -18,6 +19,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from . import _is_lua_trained_model
 from . import instantiate
+
+import warnings
+warnings.filterwarnings("ignore") 
 
 
 def class_instantiate(classobj):
@@ -291,11 +295,18 @@ def execute(operations, configs, output_dir):
             train_loader, val_loader, test_loader = create_data_source(configs,
                                                                        output_dir)
         elif "train" in operations:
-            # sfk crossval
-            train_loader, val_loader = get_sfk_loaders(configs)
-            # train_loader, val_loader = get_loaders(configs)
-            # train_loader, val_loader = create_data_source(configs, output_dir,
-            #                                               load_test=False)
+            if "k_fold" in operations:
+                # simple k-fold
+                splits = np.load(configs['dataset']['seq_fold_ids'], allow_pickle=True)
+                full_dataset = get_full_dataset(configs)
+                print('full_dataset len:', len(full_dataset))
+                dataloaders = get_all_split_loaders(configs, full_dataset, splits)
+                print('# dataloaders:', len(dataloaders))
+                print('train/val lens:', len(dataloaders[0][0]), len(dataloaders[0][1]))
+            else:
+                # regular hold-out
+                train_loader, val_loader = create_data_source(configs, output_dir,
+                                                              load_test=False)
         elif "evaluate" in operations:
             test_loader = create_data_source(configs, load_train_val=False,
                                              load_test=True)
@@ -307,7 +318,10 @@ def execute(operations, configs, output_dir):
                 and "n_cell_types" in configs["model"]["class_args"]
             ):
                 model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
-                dataset_n_cell_types = train_loader.dataset.dataset.n_cell_types
+                if "skf_fold" in operations:
+                    dataset_n_cell_types = train_loader.dataset.dataset.n_cell_types
+                elif "k_fold" in operations:
+                    dataset_n_cell_types = configs['model']['class_args']['n_cell_types']
                 assert model_n_cell_types == dataset_n_cell_types, f"Expected {dataset_n_cell_types} "\
                     f"cell types based on dataset, got {model_n_cell_types} in config"
                 
@@ -316,7 +330,10 @@ def execute(operations, configs, output_dir):
                 and "n_genomic_features" in configs["model"]["class_args"]
             ):
                 model_n_features = configs["model"]["class_args"]["n_genomic_features"]
-                dataset_n_features = train_loader.dataset.dataset.n_target_features
+                if "skf_fold" in operations:
+                    dataset_n_features = train_loader.dataset.dataset.n_target_features
+                elif "k_fold" in operations:
+                    dataset_n_features = 1 # train_loader.dataset.n_target_features
                 assert model_n_features == dataset_n_features, f"Expected {dataset_n_features} "\
                     f"target features based on dataset, but got {model_n_features} in config"
 
@@ -352,23 +369,32 @@ def execute(operations, configs, output_dir):
                     optimizer_kwargs=optim_kwargs,
                 )
             if "dataset" in configs:
-                # skf ct_mask_idx
-                ct_mask_idx = np.load(configs['dataset']['ct_fold_ids'], allow_pickle=True)
-                # ct_mask_idx = np.array_split(
-                #     range(configs['model']['class_args']['n_cell_types']), 
-                #     configs['dataset']['dataset_args']['n_folds']
-                #     )
+                # if "skf_fold" in operations:
+                # # skf ct_mask_idx
+                #     ct_masks = np.load(configs['dataset']['ct_fold_ids'], allow_pickle=True)
+
+                if "k_fold" in operations:
+                    ct_masks = np.load(configs['dataset']['ct_fold_ids'], allow_pickle=True)
+                    # маски для текущего фолда
+                    curr_fold = configs['dataset']['dataset_args']['fold']
+                    ct_masks = ct_masks[curr_fold]
+
                 train_model_info.bind(
-                    fold=configs['dataset']['dataset_args']['fold'],
-                    ct_mask_idx=ct_mask_idx,
+                    # fold=configs['dataset']['dataset_args']['fold'],
+                    ct_masks=ct_masks,
                     model=model,
+                    n_cell_types=configs['model']['class_args']['n_cell_types'],
                     loss_criterion=loss,
                     optimizer_class=optim,
                     optimizer_kwargs=optim_kwargs,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
+                    dataloaders=dataloaders,
+                    # train_loader=train_loader,
+                    # val_loader=val_loader,
                     scheduler_class=scheduler_class,
                     scheduler_kwargs=scheduler_kwargs,
+                    checkpoint_resume=configs['model']['checkpoint_resume'],
+                    checkpoint_epoch=configs['model']['checkpoint_epoch'],
+                    checkpoint_fold=configs['model']['checkpoint_fold'],
                 )
             # try:
             train_model = instantiate(train_model_info)
@@ -382,7 +408,9 @@ def execute(operations, configs, output_dir):
                 and "evaluate" in operations
             ):
                 train_model.create_test_set()
-            train_model.train_and_validate()
+        
+            train_model.train_and_crossval()
+            # train_model.train_and_validate()
 
         elif op == "evaluate":
             if train_model is not None:
@@ -475,6 +503,92 @@ def interval_from_line(bed_line, pad_left=0, pad_right=0, chrom_counts=None):
     return chrom, start, end
 
 
+def get_all_split_loaders(configs, dataset, cv_splits):
+    """
+    Create DataLoaders for each split
+    """
+    split_samplers = []
+    for i in range(len(cv_splits)):
+        split_samplers.append(
+            create_split_loaders(
+                configs,
+                dataset,
+                cv_splits[i]
+                )
+        )
+    return split_samplers
+    
+
+def create_split_loaders(configs, full_dataset, split):
+    """
+    Called for each split, this creates a two DataLoaders for each split. 
+    One DataLoader for the samples in the training folds and one DataLoader 
+    for the samples in the validation fold.
+    """
+    random.seed(666)
+
+    dataset_info = configs["dataset"]
+    train_folds_idx = split[0]
+    valid_folds_idx = split[1]
+    current_fold_idx = np.append(train_folds_idx, valid_folds_idx)
+    random.shuffle(current_fold_idx)
+
+    train_subset = torch.utils.data.Subset(
+        full_dataset, 
+        current_fold_idx
+        )
+    train_transform = instantiate(dataset_info["train_transform"])
+    train_subset.dataset.transform = train_transform
+
+    val_subset = torch.utils.data.Subset(
+        full_dataset, 
+        valid_folds_idx
+        )
+    val_transform = instantiate(dataset_info["val_transform"])
+    val_subset.dataset.transform = val_transform
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    train_sampler_class = getattr(module, dataset_info["sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    train_sampler = train_sampler_class(
+        train_subset, replacement=False, generator=gen
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_subset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.subset_encode_worker_init_fn,
+        sampler=train_sampler,
+    )
+
+    val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+
+    val_sampler = val_sampler_class(
+        data_source=val_subset, 
+        num_samples=dataset_info['validation_sampler_args']['num_samples'], 
+        generator=gen
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+            val_subset,
+            batch_size=configs['dataset']["loader_args"]["batch_size"],
+            num_workers=configs['dataset']["loader_args"]["num_workers"],
+            worker_init_fn=module.subset_encode_worker_init_fn,
+            sampler=val_sampler,
+        )
+
+    return (train_loader, val_loader) 
+
+
 def get_loaders(configs):
     """
     """
@@ -485,11 +599,13 @@ def get_loaders(configs):
     with open(dataset_info["sampling_intervals_path"])  as f:
         for line in f:
             chrom, start, end = interval_from_line(line)
-            genome_intervals.append((chrom, start, end))
+            if chrom not in dataset_info["test_holdout"]:
+                genome_intervals.append((chrom, start, end))
 
-    # bedug
-    genome_intervals = random.sample(genome_intervals, k=100)
-    print("DEBUG MODE ON:", len(genome_intervals))
+    # bedug mode
+    if dataset_info['debug']:
+        genome_intervals = random.sample(genome_intervals, k=1000)
+        print("DEBUG MODE ON:", len(genome_intervals))
 
     with open(dataset_info["distinct_features_path"]) as f:
         distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -523,9 +639,9 @@ def get_loaders(configs):
     val_intervals = genome_intervals_arr[val_idx].tolist()
 
     train_config = dataset_info["dataset_args"].copy()
-    del train_config['fold']
     del train_config['n_folds']
     train_config["intervals"] = train_intervals
+
     if "train_transform" in dataset_info:
         # load transforms
         train_transform = instantiate(dataset_info["train_transform"])
@@ -549,7 +665,7 @@ def get_loaders(configs):
 
     # load validation dataset and loader
     val_config = dataset_info["dataset_args"].copy()
-    del val_config['fold']
+    # del val_config['fold']
     del val_config['n_folds']
     val_config["intervals"] = val_intervals
     if "val_transform" in dataset_info:
@@ -575,26 +691,37 @@ def get_loaders(configs):
         sampler=val_sampler,
     )
 
-    # out = {
-    #     'genome_intervals': genome_intervals_arr, 
-    #     'train_idx': tr_idx_list,
-    #     'val_idx': val_idx_list,
-    #     'train_loader': train_loader, 
-    #     'val_loader': val_loader,
-    # }
-
     print(len(train_loader), len(val_loader))
 
     return train_loader, val_loader
 
 
-def get_sfk_loaders(configs):
+def get_full_dataloader(configs):
     """
     """
+    # if "dataset" in configs:
     dataset_info = configs["dataset"]
-    fold_ids_path = configs["dataset"]['fold_ids']
-    current_fold = configs["dataset"]['dataset_args']['fold']
-    print('current fold:', current_fold)
+
+    full_dataset = get_full_dataset(configs)
+
+    # # all intervals
+    # genome_intervals = []
+    # with open(dataset_info["sampling_intervals_path"])  as f:
+    #     for line in f:
+    #         chrom, start, end = interval_from_line(line)
+    #         if chrom not in dataset_info["test_holdout"]:
+    #             genome_intervals.append((chrom, start, end))
+
+    # # bedug mode
+    # if dataset_info['debug']:
+    #     genome_intervals = random.sample(genome_intervals, k=1000)
+    #     print("DEBUG MODE ON:", len(genome_intervals))
+
+    # with open(dataset_info["distinct_features_path"]) as f:
+    #     distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+    # with open(dataset_info["target_features_path"]) as f:
+    #     target_features = list(map(lambda x: x.rstrip(), f.readlines()))
 
     module = None
     if os.path.isdir(dataset_info["path"]):
@@ -602,64 +729,117 @@ def get_sfk_loaders(configs):
     else:
         module = module_from_file(dataset_info["path"])
 
-    with open(fold_ids_path, 'r') as f:
-        skf_idx_dict = json.load(f)
+    # dataset_class = getattr(module, dataset_info["class"])
+    # dataset_info["dataset_args"]["target_features"] = target_features
+    # dataset_info["dataset_args"]["distinct_features"] = distinct_features
 
-    full_dataset = get_full_dataset(configs)
+    # # load train dataset and loader
+    # data_config = dataset_info["dataset_args"].copy()
+    # data_config["intervals"] = genome_intervals
 
-    skf_tr_subset = torch.utils.data.Subset(
-        full_dataset, 
-        skf_idx_dict[str(current_fold)]['train_idx']
-        )
+    # # train_config = dataset_info["dataset_args"].copy()
+    # # del data_config['fold']
+    # del data_config['n_folds']
 
-    skf_val_subset = torch.utils.data.Subset(
-        full_dataset, 
-        skf_idx_dict[str(current_fold)]['val_idx']
-        )
-    if "val_transform" in dataset_info:
-        # load transforms
-        val_transform = instantiate(dataset_info["val_transform"])
-        skf_val_subset.dataset.transform = val_transform
+    # if "train_transform" in dataset_info:
+    #     # load transforms
+    #     train_transform = instantiate(dataset_info["train_transform"])
+    #     data_config["transform"] = train_transform
 
+    # full_dataset = dataset_class(**data_config)
 
-    val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
+    sampler_class = getattr(module, dataset_info["sampler_class"])
     gen = torch.Generator()
     gen.manual_seed(configs["random_seed"])
-    val_sampler = val_sampler_class(
-        data_source=skf_val_subset, 
-        num_samples=dataset_info['validation_sampler_args']['num_samples'], 
-        generator=gen
+    train_sampler = sampler_class(
+        full_dataset, replacement=False, generator=gen
     )
 
-    val_loader = torch.utils.data.DataLoader(
-            skf_val_subset,
-            batch_size=configs['dataset']["loader_args"]["batch_size"],
-            num_workers=configs['dataset']["loader_args"]["num_workers"],
-            worker_init_fn=module.subset_encode_worker_init_fn,
-            sampler=val_sampler,
-        )
-
-    if dataset_info['debug']:
-        train_sampler = val_sampler
-    else:
-        sampler_class = getattr(module, dataset_info["sampler_class"])
-        gen = torch.Generator()
-        gen.manual_seed(configs["random_seed"])
-        train_sampler = sampler_class(
-            skf_tr_subset, replacement=False, generator=gen
-        )
-
-    train_loader = torch.utils.data.DataLoader(
-        skf_tr_subset,
+    full_dataloader = torch.utils.data.DataLoader(
+        full_dataset,
         batch_size=dataset_info["loader_args"]["batch_size"],
         num_workers=dataset_info["loader_args"]["num_workers"],
-        worker_init_fn=module.subset_encode_worker_init_fn,
+        worker_init_fn=module.encode_worker_init_fn,
         sampler=train_sampler,
     )
 
-    print('skf loaders:', len(train_loader), len(val_loader))
+    print('full_dataloader len:', len(full_dataloader))
 
-    return train_loader, val_loader
+    return full_dataloader
+
+
+# def get_sfk_loaders(configs):
+#     """
+#     """
+#     dataset_info = configs["dataset"]
+#     fold_ids_path = configs["dataset"]['fold_ids']
+#     current_fold = configs["dataset"]['dataset_args']['fold']
+#     print('current fold:', current_fold)
+
+#     module = None
+#     if os.path.isdir(dataset_info["path"]):
+#         module = module_from_dir(dataset_info["path"])
+#     else:
+#         module = module_from_file(dataset_info["path"])
+
+#     with open(fold_ids_path, 'r') as f:
+#         skf_idx_dict = json.load(f)
+
+#     full_dataset = get_full_dataset(configs)
+
+#     skf_tr_subset = torch.utils.data.Subset(
+#         full_dataset, 
+#         skf_idx_dict[str(current_fold)]['train_idx']
+#         )
+
+#     skf_val_subset = torch.utils.data.Subset(
+#         full_dataset, 
+#         skf_idx_dict[str(current_fold)]['val_idx']
+#         )
+#     if "val_transform" in dataset_info:
+#         # load transforms
+#         val_transform = instantiate(dataset_info["val_transform"])
+#         skf_val_subset.dataset.transform = val_transform
+
+
+#     val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
+#     gen = torch.Generator()
+#     gen.manual_seed(configs["random_seed"])
+#     val_sampler = val_sampler_class(
+#         data_source=skf_val_subset, 
+#         num_samples=dataset_info['validation_sampler_args']['num_samples'], 
+#         generator=gen
+#     )
+
+#     val_loader = torch.utils.data.DataLoader(
+#             skf_val_subset,
+#             batch_size=configs['dataset']["loader_args"]["batch_size"],
+#             num_workers=configs['dataset']["loader_args"]["num_workers"],
+#             worker_init_fn=module.subset_encode_worker_init_fn,
+#             sampler=val_sampler,
+#         )
+
+#     if dataset_info['debug']:
+#         train_sampler = val_sampler
+#     else:
+#         sampler_class = getattr(module, dataset_info["sampler_class"])
+#         gen = torch.Generator()
+#         gen.manual_seed(configs["random_seed"])
+#         train_sampler = sampler_class(
+#             skf_tr_subset, replacement=False, generator=gen
+#         )
+
+#     train_loader = torch.utils.data.DataLoader(
+#         skf_tr_subset,
+#         batch_size=dataset_info["loader_args"]["batch_size"],
+#         num_workers=dataset_info["loader_args"]["num_workers"],
+#         worker_init_fn=module.subset_encode_worker_init_fn,
+#         sampler=train_sampler,
+#     )
+
+#     print('skf loaders:', len(train_loader), len(val_loader))
+
+#     return train_loader, val_loader
 
 
 def get_full_dataset(configs):
@@ -673,17 +853,16 @@ def get_full_dataset(configs):
         with open(dataset_info["sampling_intervals_path"])  as f:
             for line in f:
                 chrom, start, end = interval_from_line(line)
-                genome_intervals.append((chrom, start, end))
+                if chrom not in dataset_info["test_holdout"]:
+                    genome_intervals.append((chrom, start, end))
 
-        # print(len(genome_intervals))
-        # bedug
-        # genome_intervals = random.sample(genome_intervals, k=20)
-        # print("DEBUG MODE ON:", len(genome_intervals))
+        # bedug mode
+        if dataset_info['debug']:
+            genome_intervals = random.sample(genome_intervals, k=1000)
+            print("DEBUG MODE ON:", len(genome_intervals))
 
         with open(dataset_info["distinct_features_path"]) as f:
             distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
-
-        # print(len(distinct_features))
 
         with open(dataset_info["target_features_path"]) as f:
             target_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -702,16 +881,9 @@ def get_full_dataset(configs):
         data_config = dataset_info["dataset_args"].copy()
         data_config["intervals"] = genome_intervals
 
-        # train_config = dataset_info["dataset_args"].copy()
         del data_config['fold']
         del data_config['n_folds']
-        # train_config["intervals"] = genome_intervals
-        if "train_transform" in dataset_info:
-            # load transforms
-            train_transform = instantiate(dataset_info["train_transform"])
-            data_config["transform"] = train_transform
         full_dataset = dataset_class(**data_config)
-        # print(len(full_dataset))
 
         return full_dataset
 
@@ -788,6 +960,7 @@ def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=No
 
     """
     operations = configs["ops"]
+    print(operations)
 
     if "train" in operations and "lr" not in configs and lr and lr != "None":
         configs["lr"] = float(lr)
