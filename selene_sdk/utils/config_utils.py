@@ -180,17 +180,27 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                      "validation":[],
                      "test":[]
                      }
-        with open(dataset_info["sampling_intervals_path"]) as f:
-            for line in f:
-                chrom, start, end = line.rstrip().split("\t")[:3]
-                start = int(start)
-                end = int(end)
-                if load_train_val and chrom in dataset_info["validation_holdout"]:
-                    intervals["validation"].append((chrom, start, end))
-                elif load_test and chrom in dataset_info["test_holdout"]:
-                    intervals["test"].append((chrom, start, end))
-                elif load_train_val:
-                    intervals["train"].append((chrom, start, end))
+        for prefix in intervals.keys():
+            if prefix+"_intervals_path" in dataset_info:
+                with open(dataset_info[prefix+"_intervals_path"]) as f:
+                    for line in f:
+                        chrom, start, end = line.rstrip().split("\t")[:3]
+                        start = int(start)
+                        end = int(end)
+                        intervals[prefix].append((chrom, start, end))
+
+        if "sampling_intervals_path" in dataset_info.keys():
+            with open(dataset_info["sampling_intervals_path"]) as f:
+                for line in f:
+                    chrom, start, end = line.rstrip().split("\t")[:3]
+                    start = int(start)
+                    end = int(end)
+                    if load_train_val and chrom in dataset_info["validation_holdout"]:
+                        intervals["validation"].append((chrom, start, end))
+                    elif load_test and chrom in dataset_info["test_holdout"]:
+                        intervals["test"].append((chrom, start, end))
+                    elif load_train_val:
+                        intervals["train"].append((chrom, start, end))
 
         with open(dataset_info["distinct_features_path"]) as f:
             distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -245,6 +255,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     num_workers=dataset_info["loader_args"]["num_workers"],
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
+                    drop_last=True
                 )
             loaders.append(task_loader)
 
