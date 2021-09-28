@@ -375,9 +375,10 @@ def execute(operations, configs, output_dir):
 
                 if "k_fold" in operations:
                     ct_masks = np.load(configs['dataset']['ct_fold_ids'], allow_pickle=True)
-                    # маски для текущего фолда
+                    # набор масок для текущей модели
                     curr_fold = configs['dataset']['dataset_args']['fold']
                     ct_masks = ct_masks[curr_fold]
+                    print('# cell_type folds:', len(ct_masks))
 
                 train_model_info.bind(
                     # fold=configs['dataset']['dataset_args']['fold'],
@@ -388,8 +389,6 @@ def execute(operations, configs, output_dir):
                     optimizer_class=optim,
                     optimizer_kwargs=optim_kwargs,
                     dataloaders=dataloaders,
-                    # train_loader=train_loader,
-                    # val_loader=val_loader,
                     scheduler_class=scheduler_class,
                     scheduler_kwargs=scheduler_kwargs,
                     checkpoint_resume=configs['model']['checkpoint_resume'],
@@ -503,23 +502,128 @@ def interval_from_line(bed_line, pad_left=0, pad_right=0, chrom_counts=None):
     return chrom, start, end
 
 
+def get_dataset(configs, genome_intervals):
+    """
+    """
+    if "dataset" in configs:
+        dataset_info = configs["dataset"]
+
+        with open(dataset_info["distinct_features_path"]) as f:
+            distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+        with open(dataset_info["target_features_path"]) as f:
+            target_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+        module = None
+        if os.path.isdir(dataset_info["path"]):
+            module = module_from_dir(dataset_info["path"])
+        else:
+            module = module_from_file(dataset_info["path"])
+
+        dataset_class = getattr(module, dataset_info["class"])
+        dataset_info["dataset_args"]["target_features"] = target_features
+        dataset_info["dataset_args"]["distinct_features"] = distinct_features
+
+        # load train dataset and loader
+        data_config = dataset_info["dataset_args"].copy()
+        data_config["intervals"] = genome_intervals
+
+        del data_config['fold']
+        del data_config['n_folds']
+        full_dataset = dataset_class(**data_config)
+
+        return full_dataset
+
+
 def get_all_split_loaders(configs, dataset, cv_splits):
     """
     Create DataLoaders for each split
     """
     split_samplers = []
     for i in range(len(cv_splits)):
-        split_samplers.append(
-            create_split_loaders(
-                configs,
-                dataset,
-                cv_splits[i]
-                )
-        )
+        # !!!
+        # if configs['dataset']['shift_test']:
+        #     loaders = create_split_loaders_old(
+        #         configs,
+        #         dataset,
+        #         cv_splits[i]
+        #         )
+        # else:
+        #     loaders = create_split_loaders(
+        #         configs,
+        #         dataset,
+        #         cv_splits[i]
+        #         )
+        loaders = create_split_loaders(
+                    configs,
+                    dataset,
+                    cv_splits[i]
+                    )
+        split_samplers.append(loaders)
     return split_samplers
     
 
 def create_split_loaders(configs, full_dataset, split):
+    """
+    Called for each split, this creates a two DataLoaders for each split. 
+    One DataLoader for the samples in the training folds and one DataLoader 
+    for the samples in the validation fold.
+    """
+    random.seed(666)
+
+    dataset_info = configs["dataset"]
+    train_folds_idx = split[0]
+    valid_folds_idx = split[1]
+
+    train_subset = get_dataset(configs, train_folds_idx)
+    train_transform = instantiate(dataset_info["train_transform"])
+    train_subset.transform = train_transform
+
+    val_subset = get_dataset(configs, valid_folds_idx)
+    val_transform = instantiate(dataset_info["val_transform"])
+    val_subset.transform = val_transform
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    train_sampler_class = getattr(module, dataset_info["sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    train_sampler = train_sampler_class(
+        train_subset, replacement=False, generator=gen
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_subset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.encode_worker_init_fn,
+        sampler=train_sampler,
+    )
+
+    val_sampler_class = getattr(module, dataset_info["sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+
+    val_sampler = val_sampler_class(
+        val_subset, replacement=False, generator=gen
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+            val_subset,
+            batch_size=configs['dataset']["loader_args"]["batch_size"],
+            num_workers=configs['dataset']["loader_args"]["num_workers"],
+            worker_init_fn=module.encode_worker_init_fn,
+            sampler=val_sampler,
+        )
+
+    return (train_loader, val_loader) 
+
+
+def create_split_loaders_old(configs, full_dataset, split):
     """
     Called for each split, this creates a two DataLoaders for each split. 
     One DataLoader for the samples in the training folds and one DataLoader 
@@ -587,7 +691,6 @@ def create_split_loaders(configs, full_dataset, split):
         )
 
     return (train_loader, val_loader) 
-
 
 def get_loaders(configs):
     """
@@ -704,49 +807,11 @@ def get_full_dataloader(configs):
 
     full_dataset = get_full_dataset(configs)
 
-    # # all intervals
-    # genome_intervals = []
-    # with open(dataset_info["sampling_intervals_path"])  as f:
-    #     for line in f:
-    #         chrom, start, end = interval_from_line(line)
-    #         if chrom not in dataset_info["test_holdout"]:
-    #             genome_intervals.append((chrom, start, end))
-
-    # # bedug mode
-    # if dataset_info['debug']:
-    #     genome_intervals = random.sample(genome_intervals, k=1000)
-    #     print("DEBUG MODE ON:", len(genome_intervals))
-
-    # with open(dataset_info["distinct_features_path"]) as f:
-    #     distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
-
-    # with open(dataset_info["target_features_path"]) as f:
-    #     target_features = list(map(lambda x: x.rstrip(), f.readlines()))
-
     module = None
     if os.path.isdir(dataset_info["path"]):
         module = module_from_dir(dataset_info["path"])
     else:
         module = module_from_file(dataset_info["path"])
-
-    # dataset_class = getattr(module, dataset_info["class"])
-    # dataset_info["dataset_args"]["target_features"] = target_features
-    # dataset_info["dataset_args"]["distinct_features"] = distinct_features
-
-    # # load train dataset and loader
-    # data_config = dataset_info["dataset_args"].copy()
-    # data_config["intervals"] = genome_intervals
-
-    # # train_config = dataset_info["dataset_args"].copy()
-    # # del data_config['fold']
-    # del data_config['n_folds']
-
-    # if "train_transform" in dataset_info:
-    #     # load transforms
-    #     train_transform = instantiate(dataset_info["train_transform"])
-    #     data_config["transform"] = train_transform
-
-    # full_dataset = dataset_class(**data_config)
 
     sampler_class = getattr(module, dataset_info["sampler_class"])
     gen = torch.Generator()
@@ -766,80 +831,6 @@ def get_full_dataloader(configs):
     print('full_dataloader len:', len(full_dataloader))
 
     return full_dataloader
-
-
-# def get_sfk_loaders(configs):
-#     """
-#     """
-#     dataset_info = configs["dataset"]
-#     fold_ids_path = configs["dataset"]['fold_ids']
-#     current_fold = configs["dataset"]['dataset_args']['fold']
-#     print('current fold:', current_fold)
-
-#     module = None
-#     if os.path.isdir(dataset_info["path"]):
-#         module = module_from_dir(dataset_info["path"])
-#     else:
-#         module = module_from_file(dataset_info["path"])
-
-#     with open(fold_ids_path, 'r') as f:
-#         skf_idx_dict = json.load(f)
-
-#     full_dataset = get_full_dataset(configs)
-
-#     skf_tr_subset = torch.utils.data.Subset(
-#         full_dataset, 
-#         skf_idx_dict[str(current_fold)]['train_idx']
-#         )
-
-#     skf_val_subset = torch.utils.data.Subset(
-#         full_dataset, 
-#         skf_idx_dict[str(current_fold)]['val_idx']
-#         )
-#     if "val_transform" in dataset_info:
-#         # load transforms
-#         val_transform = instantiate(dataset_info["val_transform"])
-#         skf_val_subset.dataset.transform = val_transform
-
-
-#     val_sampler_class = getattr(module, dataset_info["validation_sampler_class"])
-#     gen = torch.Generator()
-#     gen.manual_seed(configs["random_seed"])
-#     val_sampler = val_sampler_class(
-#         data_source=skf_val_subset, 
-#         num_samples=dataset_info['validation_sampler_args']['num_samples'], 
-#         generator=gen
-#     )
-
-#     val_loader = torch.utils.data.DataLoader(
-#             skf_val_subset,
-#             batch_size=configs['dataset']["loader_args"]["batch_size"],
-#             num_workers=configs['dataset']["loader_args"]["num_workers"],
-#             worker_init_fn=module.subset_encode_worker_init_fn,
-#             sampler=val_sampler,
-#         )
-
-#     if dataset_info['debug']:
-#         train_sampler = val_sampler
-#     else:
-#         sampler_class = getattr(module, dataset_info["sampler_class"])
-#         gen = torch.Generator()
-#         gen.manual_seed(configs["random_seed"])
-#         train_sampler = sampler_class(
-#             skf_tr_subset, replacement=False, generator=gen
-#         )
-
-#     train_loader = torch.utils.data.DataLoader(
-#         skf_tr_subset,
-#         batch_size=dataset_info["loader_args"]["batch_size"],
-#         num_workers=dataset_info["loader_args"]["num_workers"],
-#         worker_init_fn=module.subset_encode_worker_init_fn,
-#         sampler=train_sampler,
-#     )
-
-#     print('skf loaders:', len(train_loader), len(val_loader))
-
-#     return train_loader, val_loader
 
 
 def get_full_dataset(configs):
