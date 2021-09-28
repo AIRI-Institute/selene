@@ -255,7 +255,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     num_workers=dataset_info["loader_args"]["num_workers"],
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
-                    drop_last=True
+                    pin_memory=True,
                 )
             loaders.append(task_loader)
 
