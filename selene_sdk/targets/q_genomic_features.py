@@ -28,18 +28,16 @@ class qGenomicFeatures(Target):
         """
 
         self.features =  features
+        self._feature_handlers = {}
         self._feature_handlers = {i: pyBigWig.open(j) \
                                             for i,j in zip(features,features_path)
                                       }
-        self.n_features = len(features)
-
-
     def get_feature_data(self, chrom, start, end):
         """
         For a sequence of length :math:`L = end - start`, return the
         features' values corresponding to that region. Feature values
-        are means of quantitative feature values computed over the
-        specified interval.
+        are maximum of quantitative feature values computed observed in
+        the specified interval.
 
         Parameters
         ----------
@@ -54,9 +52,16 @@ class qGenomicFeatures(Target):
         -------
         numpy.ndarray
             array of length N, where N is a number of features, and
-            array[i] is a mean of feature signal over the input genomic
+            array[i] is a max of feature signal over the input genomic
             interval.
 
         """
 
-        return np.array([self._feature_handlers[i].stats(chrom, start, end) for i in self.features])
+        try:
+            results = np.array([self._feature_handlers[i].stats(chrom, start, end, type="max")[0] \
+                                                                                    for i in self.features])
+            return results
+        except:
+            print ("Error loading data on position ",chrom,start,end)
+            import sys
+            sys.exit()
