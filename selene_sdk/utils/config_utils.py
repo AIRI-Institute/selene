@@ -393,7 +393,7 @@ def execute(operations, configs, output_dir):
                     scheduler_kwargs=scheduler_kwargs,
                     checkpoint_resume=configs['model']['checkpoint_resume'],
                     checkpoint_epoch=configs['model']['checkpoint_epoch'],
-                    checkpoint_fold=configs['model']['checkpoint_fold'],
+                    checkpoint_chunk=configs['model']['checkpoint_chunk'],
                 )
             # try:
             train_model = instantiate(train_model_info)
@@ -541,19 +541,6 @@ def get_all_split_loaders(configs, dataset, cv_splits):
     """
     split_samplers = []
     for i in range(len(cv_splits)):
-        # !!!
-        # if configs['dataset']['shift_test']:
-        #     loaders = create_split_loaders_old(
-        #         configs,
-        #         dataset,
-        #         cv_splits[i]
-        #         )
-        # else:
-        #     loaders = create_split_loaders(
-        #         configs,
-        #         dataset,
-        #         cv_splits[i]
-        #         )
         loaders = create_split_loaders(
                     configs,
                     dataset,
@@ -589,11 +576,13 @@ def create_split_loaders(configs, full_dataset, split):
     else:
         module = module_from_file(dataset_info["path"])
 
-    train_sampler_class = getattr(module, dataset_info["sampler_class"])
+    train_sampler_class = getattr(module, dataset_info["train_sampler_class"])
     gen = torch.Generator()
     gen.manual_seed(configs["random_seed"])
     train_sampler = train_sampler_class(
-        train_subset, replacement=False, generator=gen
+        train_subset, 
+        replacement=dataset_info["train_sampler_args"]['replacement'], 
+        generator=gen
     )
 
     train_loader = torch.utils.data.DataLoader(
@@ -604,12 +593,14 @@ def create_split_loaders(configs, full_dataset, split):
         sampler=train_sampler,
     )
 
-    val_sampler_class = getattr(module, dataset_info["sampler_class"])
+    val_sampler_class = getattr(module, dataset_info["train_sampler_class"])
     gen = torch.Generator()
     gen.manual_seed(configs["random_seed"])
 
     val_sampler = val_sampler_class(
-        val_subset, replacement=False, generator=gen
+        val_subset, 
+        replacement=dataset_info["train_sampler_args"]['replacement'],
+        generator=gen
     )
 
     val_loader = torch.utils.data.DataLoader(
