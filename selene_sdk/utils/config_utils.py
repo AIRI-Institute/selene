@@ -253,11 +253,9 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
 
             task_loader = torch.utils.data.DataLoader(
                     task_dataset,
-                    batch_size=dataset_info["loader_args"]["batch_size"],
-                    num_workers=dataset_info["loader_args"]["num_workers"],
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
-                    pin_memory=True,
+                    **dataset_info["loader_args"],
                 )
             loaders.append(task_loader)
 
