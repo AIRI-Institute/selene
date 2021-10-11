@@ -8,7 +8,8 @@ import importlib
 import sys
 from time import strftime
 import types
-
+import numpy as np
+import random
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -298,31 +299,40 @@ def execute(operations, configs, output_dir):
             train_loader, val_loader, test_loader = create_data_source(configs,
                                                                        output_dir)
         elif "train" in operations:
-            train_loader, val_loader = create_data_source(configs, output_dir,
-                                                          load_test=False)
+            if "ct_masked_train" in operations:
+                splits = np.load(configs['dataset']['seq_fold_ids'], allow_pickle=True)
+                dataloaders = get_all_split_loaders(configs, splits)
+            else:
+                train_loader, val_loader = create_data_source(configs, output_dir, load_test=False)
         elif "evaluate" in operations:
             test_loader = create_data_source(configs, load_train_val=False,
                                              load_test=True)
     for op in operations:
         if op == "train":
-            # make sure we provided the right dimensions in the config
-            if (
-                "dataset" in configs
-                and "n_cell_types" in configs["model"]["class_args"]
-            ):
+            if "ct_masked_train" in operations:
                 model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
-                dataset_n_cell_types = train_loader.dataset.n_cell_types
-                assert model_n_cell_types == dataset_n_cell_types, f"Expected {dataset_n_cell_types} "\
-                    f"cell types based on dataset, got {model_n_cell_types} in config"
-                
-            if (
-                "dataset" in configs
-                and "n_genomic_features" in configs["model"]["class_args"]
-            ):
+                dataset_n_cell_types = configs['model']['class_args']['n_cell_types']
                 model_n_features = configs["model"]["class_args"]["n_genomic_features"]
-                dataset_n_features = train_loader.dataset.n_target_features
-                assert model_n_features == dataset_n_features, f"Expected {dataset_n_features} "\
-                    f"target features based on dataset, but got {model_n_features} in config"
+                dataset_n_features = dataloaders[0][0].dataset.n_cell_types
+            else:
+                # make sure we provided the right dimensions in the config
+                if (
+                    "dataset" in configs
+                    and "n_cell_types" in configs["model"]["class_args"]
+                ):
+                    model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
+                    dataset_n_cell_types = train_loader.dataset.n_cell_types
+                    assert model_n_cell_types == dataset_n_cell_types, f"Expected {dataset_n_cell_types} "\
+                        f"cell types based on dataset, got {model_n_cell_types} in config"
+                    
+                if (
+                    "dataset" in configs
+                    and "n_genomic_features" in configs["model"]["class_args"]
+                ):
+                    model_n_features = configs["model"]["class_args"]["n_genomic_features"]
+                    dataset_n_features = train_loader.dataset.n_target_features
+                    assert model_n_features == dataset_n_features, f"Expected {dataset_n_features} "\
+                        f"target features based on dataset, but got {model_n_features} in config"
 
             # load model, criterion, and optimizer
             if "criterion" in configs:
@@ -356,17 +366,41 @@ def execute(operations, configs, output_dir):
                     optimizer_kwargs=optim_kwargs,
                 )
             if "dataset" in configs:
-                train_model_info.bind(
-                    model=model,
-                    loss_criterion=loss,
-                    optimizer_class=optim,
-                    optimizer_kwargs=optim_kwargs,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
-                    scheduler_class=scheduler_class,
-                    scheduler_kwargs=scheduler_kwargs,
-                )
+                if "ct_masked_train" in operations:
+                    ct_masks = np.load(configs['dataset']['ct_fold_ids'], allow_pickle=True)
+                    # набор масок для текущей модели
+                    curr_fold = configs['dataset']['dataset_args']['fold']
+                    ct_masks = ct_masks[curr_fold]
+
+                    train_model_info.bind(
+                        ct_masks=ct_masks,
+                        model=model,
+                        n_cell_types=configs['model']['class_args']['n_cell_types'],
+                        loss_criterion=loss,
+                        optimizer_class=optim,
+                        optimizer_kwargs=optim_kwargs,
+                        dataloaders=dataloaders,
+                        scheduler_class=scheduler_class,
+                        scheduler_kwargs=scheduler_kwargs,
+                        checkpoint_resume=configs['model']['checkpoint_resume'],
+                        checkpoint_epoch=configs['model']['checkpoint_epoch'],
+                        checkpoint_chunk=configs['model']['checkpoint_chunk'],
+                    )
+
+                else:
+                    train_model_info.bind(
+                        model=model,
+                        loss_criterion=loss,
+                        optimizer_class=optim,
+                        optimizer_kwargs=optim_kwargs,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
+                        scheduler_class=scheduler_class,
+                        scheduler_kwargs=scheduler_kwargs,
+                    )
+
             train_model = instantiate(train_model_info)
+
             # TODO: will find a better way to handle this in the future
             if (
                 "sampler" in configs
@@ -375,7 +409,11 @@ def execute(operations, configs, output_dir):
                 and "evaluate" in operations
             ):
                 train_model.create_test_set()
-            train_model.train_and_validate()
+
+            if "ct_masked_train" in operations:
+                train_model.run_masked_train()
+            else:
+                train_model.train_and_validate()
 
         elif op == "evaluate":
             if train_model is not None:
@@ -568,3 +606,154 @@ def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=No
         writer.close()
 
     execute(operations, configs, current_run_output_dir)
+
+
+def get_full_dataloader(configs):
+    """
+    """
+    dataset_info = configs["dataset"]
+
+    full_dataset = get_full_dataset(configs)
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    sampler_class = getattr(module, dataset_info["sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    train_sampler = sampler_class(
+        full_dataset, replacement=False, generator=gen
+    )
+
+    full_dataloader = torch.utils.data.DataLoader(
+        full_dataset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.encode_worker_init_fn,
+        sampler=train_sampler,
+    )
+
+    return full_dataloader
+
+
+def interval_from_line(bed_line, pad_left=0, pad_right=0, chrom_counts=None):
+    chrom, start, end = bed_line.rstrip().split('\t')[:3]
+    start = max(0, int(start) - pad_left)
+    if pad_right:
+        end = min(int(end) + pad_right, chrom_counts[chrom])
+    else:
+        end = int(end)
+    return chrom, start, end
+
+
+def get_all_split_loaders(configs, cv_splits):
+    """
+    Create DataLoaders for each split
+    """
+    split_samplers = []
+    for i in range(len(cv_splits)):
+        loaders = create_split_loaders(
+                    configs,
+                    cv_splits[i]
+                    )
+        split_samplers.append(loaders)
+    return split_samplers
+    
+
+def create_split_loaders(configs, split):
+    """
+    Called for each split, this creates a two DataLoaders for each split. 
+    One DataLoader for the samples in the training folds and one DataLoader 
+    for the samples in the validation fold.
+    """
+    random.seed(666)
+
+    dataset_info = configs["dataset"]
+    train_folds_idx = split[0]
+    valid_folds_idx = split[1]
+
+    train_subset = get_dataset(configs, train_folds_idx)
+    train_transform = instantiate(dataset_info["train_transform"])
+    train_subset.transform = train_transform
+
+    val_subset = get_dataset(configs, valid_folds_idx)
+    val_transform = instantiate(dataset_info["val_transform"])
+    val_subset.transform = val_transform
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    train_sampler_class = getattr(module, dataset_info["train_sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+    train_sampler = train_sampler_class(
+        train_subset, 
+        replacement=dataset_info["train_sampler_args"]['replacement'], 
+        generator=gen
+    )
+
+    train_loader = torch.utils.data.DataLoader(
+        train_subset,
+        batch_size=dataset_info["loader_args"]["batch_size"],
+        num_workers=dataset_info["loader_args"]["num_workers"],
+        worker_init_fn=module.encode_worker_init_fn,
+        sampler=train_sampler,
+    )
+
+    val_sampler_class = getattr(module, dataset_info["train_sampler_class"])
+    gen = torch.Generator()
+    gen.manual_seed(configs["random_seed"])
+
+    val_sampler = val_sampler_class(
+        val_subset, 
+        replacement=dataset_info["train_sampler_args"]['replacement'],
+        generator=gen
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+            val_subset,
+            batch_size=configs['dataset']["loader_args"]["batch_size"],
+            num_workers=configs['dataset']["loader_args"]["num_workers"],
+            worker_init_fn=module.encode_worker_init_fn,
+            sampler=val_sampler,
+        )
+
+    return (train_loader, val_loader) 
+
+
+def get_dataset(configs, genome_intervals):
+    """
+    """
+    dataset_info = configs["dataset"]
+
+    with open(dataset_info["distinct_features_path"]) as f:
+        distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+    with open(dataset_info["target_features_path"]) as f:
+        target_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+    module = None
+    if os.path.isdir(dataset_info["path"]):
+        module = module_from_dir(dataset_info["path"])
+    else:
+        module = module_from_file(dataset_info["path"])
+
+    dataset_class = getattr(module, dataset_info["class"])
+    dataset_info["dataset_args"]["target_features"] = target_features
+    dataset_info["dataset_args"]["distinct_features"] = distinct_features
+
+    # load train dataset and loader
+    data_config = dataset_info["dataset_args"].copy()
+    data_config["intervals"] = genome_intervals
+
+    del data_config['fold']
+    del data_config['n_folds']
+    full_dataset = dataset_class(**data_config)
+
+    return full_dataset
