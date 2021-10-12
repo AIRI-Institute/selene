@@ -608,6 +608,53 @@ def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=No
     execute(operations, configs, current_run_output_dir)
 
 
+def get_full_dataset(configs):
+    """
+    Get EncodeDataset with all chromosomes (except test hold out)
+    """
+    if "dataset" in configs:
+        dataset_info = configs["dataset"]
+
+        # all intervals
+        genome_intervals = []
+        with open(dataset_info["sampling_intervals_path"])  as f:
+            for line in f:
+                chrom, start, end = interval_from_line(line)
+                if chrom not in dataset_info["test_holdout"]:
+                    genome_intervals.append((chrom, start, end))
+
+        # bedug mode
+        if dataset_info['debug']:
+            genome_intervals = random.sample(genome_intervals, k=1000)
+            print("DEBUG MODE ON:", len(genome_intervals))
+
+        with open(dataset_info["distinct_features_path"]) as f:
+            distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+        with open(dataset_info["target_features_path"]) as f:
+            target_features = list(map(lambda x: x.rstrip(), f.readlines()))
+
+        module = None
+        if os.path.isdir(dataset_info["path"]):
+            module = module_from_dir(dataset_info["path"])
+        else:
+            module = module_from_file(dataset_info["path"])
+
+        dataset_class = getattr(module, dataset_info["class"])
+        dataset_info["dataset_args"]["target_features"] = target_features
+        dataset_info["dataset_args"]["distinct_features"] = distinct_features
+
+        # load train dataset and loader
+        data_config = dataset_info["dataset_args"].copy()
+        data_config["intervals"] = genome_intervals
+
+        del data_config['fold']
+        del data_config['n_folds']
+        full_dataset = dataset_class(**data_config)
+
+        return full_dataset
+
+
 def get_full_dataloader(configs):
     """
     """
