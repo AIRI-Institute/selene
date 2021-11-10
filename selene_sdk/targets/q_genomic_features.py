@@ -61,7 +61,9 @@ class qGenomicFeatures(Target):
             results = np.array([self._feature_handlers[i].stats(chrom, start, end, type="max")[0] \
                                                                                     for i in self.features])
             return results
-        except:
+        except Exception:
+            import traceback
+            print(traceback.format_exc())
             print ("Error loading data on position ",chrom,start,end)
             import sys
             sys.exit()
