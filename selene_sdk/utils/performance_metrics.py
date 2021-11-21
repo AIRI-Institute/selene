@@ -476,7 +476,7 @@ class PerformanceMetrics(object):
                 tr_prediction, tr_target, tr_target_mask = metric.transform((prediction, target, target_mask))
             else:
                 tr_prediction, tr_target, tr_target_mask = prediction, target, target_mask
-            assert tr_prediction.shape == tr_target.shape == tr_target_mask.shape
+            assert tr_prediction.shape == tr_target.shape == tr_target_mask.shape, "shape of prediction, target and mask are not equal: "+"\n".join(map(str,[tr_prediction.shape,tr_target.shape,tr_target_mask.shape]))
             avg_score, track_scores = compute_score(
                 tr_prediction, tr_target, metric.fn, target_mask=tr_target_mask,
                 report_gt_feature_n_positives=self.skip_threshold)
