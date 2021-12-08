@@ -1,4 +1,6 @@
 import pyBigWig
+import traceback
+import sys
 import numpy as np
 from .target import Target
 
@@ -13,6 +15,10 @@ class qGenomicFeatures(Target):
         non-redundant feature names
     features_path : list(str)
         locations of corresponding bigWig files
+    agg_function : str
+        aggregation function used for quantitative features, defines how
+        to aggregate feature values across target genomic interval
+        should be one of pyBigWig-supported aggregation functions
 
     Attributes
     ----------
@@ -20,18 +26,27 @@ class qGenomicFeatures(Target):
         non-redundant feature names.
     n_features : int
         The number of distinct features.
+    agg_function : str
+        Aggregation function used for quantitative features
     """
 
-    def __init__(self, features, features_path):
+    def __init__(self, features, features_path,agg_function):
         """
         Constructs a new `qGenomicFeatures` object.
         """
 
         self.features =  features
+        self.agg_function = agg_function
         self._feature_handlers = {}
-        self._feature_handlers = {i: pyBigWig.open(j) \
-                                            for i,j in zip(features,features_path)
-                                      }
+        for i,j in zip(features,features_path):
+            try:
+                self._feature_handlers[i] = pyBigWig.open(j)
+            except Exception:
+                print(traceback.format_exc())
+                print ("Error dataset ",i," from file ",j)
+                sys.exit()
+
+
     def get_feature_data(self, chrom, start, end):
         """
         For a sequence of length :math:`L = end - start`, return the
@@ -58,12 +73,10 @@ class qGenomicFeatures(Target):
         """
 
         try:
-            results = np.array([self._feature_handlers[i].stats(chrom, start, end, type="max")[0] \
+            results = np.array([self._feature_handlers[i].stats(chrom, start, end, type=self.agg_function)[0] \
                                                                                     for i in self.features])
             return results
         except Exception:
-            import traceback
             print(traceback.format_exc())
             print ("Error loading data on position ",chrom,start,end)
-            import sys
             sys.exit()
