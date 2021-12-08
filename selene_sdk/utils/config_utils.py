@@ -236,7 +236,6 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             task_dataset = dataset_class(**task_config)
 
             # create sampler
-            sampler = None
             if task+"_sampler_class" in dataset_info:
                 sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
                 if task+"_sampler_args" not in dataset_info:
@@ -248,6 +247,11 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     gen.manual_seed(configs["random_seed"])
                     sampler_args["generator"] = gen
                 sampler = sampler_class(task_dataset, **sampler_args)
+            else:
+                gen = torch.Generator()
+                gen.manual_seed(configs["random_seed"])
+                sampler = torch.utils.data.RandomSampler(task_dataset,
+                                                        generator=gen)
 
             task_loader = torch.utils.data.DataLoader(
                     task_dataset,
