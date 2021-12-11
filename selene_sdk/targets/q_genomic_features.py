@@ -12,9 +12,11 @@ class qGenomicFeatures(Target):
     Parameters
     ----------
     features : list(str)
-        non-redundant feature names
-    features_path : list(str)
-        locations of corresponding bigWig files
+        non-redundant track names
+    feature_paths_file : str
+        tab-delimited file which allows to find correspondence between
+        feature(=track) name and path to bigWig file with data for
+        this track 
     agg_function : str
         aggregation function used for quantitative features, defines how
         to aggregate feature values across target genomic interval
@@ -30,7 +32,7 @@ class qGenomicFeatures(Target):
         Aggregation function used for quantitative features
     """
 
-    def __init__(self, features, features_path,agg_function):
+    def __init__(self, features, feature_paths_file, agg_function):
         """
         Constructs a new `qGenomicFeatures` object.
         """
@@ -38,6 +40,14 @@ class qGenomicFeatures(Target):
         self.features =  features
         self.agg_function = agg_function
         self._feature_handlers = {}
+        feature_path = dict(
+                [line.strip().split("\t") \
+                    for line in open(self.feature_paths_file)
+                    ]
+            )
+        feature_path = [feature_path[feature] \
+                            for feature in self.distinct_features]
+
         for i,j in zip(features,features_path):
             try:
                 self._feature_handlers[i] = pyBigWig.open(j)
