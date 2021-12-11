@@ -184,23 +184,25 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             if prefix+"_intervals_path" in dataset_info:
                 with open(dataset_info[prefix+"_intervals_path"]) as f:
                     for line in f:
-                        chrom, start, end = line.rstrip().split("\t")[:3]
-                        start = int(start)
-                        end = int(end)
-                        intervals[prefix].append((chrom, start, end))
+                        split_line = line.rstrip().split("\t")
+                        chrom = split_line[0]
+                        interval_info = list(map(int, split_line[1:]))
+                        interval_info = (chrom, *interval_info)
+                        intervals[prefix].append(interval_info)
 
         if "sampling_intervals_path" in dataset_info.keys():
             with open(dataset_info["sampling_intervals_path"]) as f:
                 for line in f:
-                    chrom, start, end = line.rstrip().split("\t")[:3]
-                    start = int(start)
-                    end = int(end)
+                    split_line = line.rstrip().split("\t")
+                    chrom = split_line[0]
+                    interval_info = list(map(int, split_line[1:]))
+                    interval_info = (chrom, *interval_info)
                     if load_train_val and chrom in dataset_info["validation_holdout"]:
-                        intervals["validation"].append((chrom, start, end))
+                        intervals["validation"].append(interval_info)
                     elif load_test and chrom in dataset_info["test_holdout"]:
-                        intervals["test"].append((chrom, start, end))
+                        intervals["test"].append(interval_info)
                     elif load_train_val:
-                        intervals["train"].append((chrom, start, end))
+                        intervals["train"].append(interval_info)
 
         with open(dataset_info["distinct_features_path"]) as f:
             distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -255,11 +257,9 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
 
             task_loader = torch.utils.data.DataLoader(
                     task_dataset,
-                    batch_size=dataset_info["loader_args"]["batch_size"],
-                    num_workers=dataset_info["loader_args"]["num_workers"],
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
-                    drop_last=True
+                    **dataset_info["loader_args"],
                 )
             loaders.append(task_loader)
 
