@@ -740,14 +740,28 @@ def create_split_loaders(configs, split):
     else:
         module = module_from_file(dataset_info["path"])
 
-    train_sampler_class = getattr(module, dataset_info["train_sampler_class"])
-    gen = torch.Generator()
-    gen.manual_seed(configs["random_seed"])
-    train_sampler = train_sampler_class(
-        train_subset, 
-        replacement=dataset_info["train_sampler_args"]['replacement'], 
-        generator=gen
-    )
+    # create sampler
+    for task in ('train', 'validation'):
+        sampler = None
+        if task + "_sampler_class" in dataset_info:
+            sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
+            if task+"_sampler_args" not in dataset_info:
+                sampler_args = {}
+            else:
+                sampler_args = dataset_info[task+"_sampler_args"]
+            if not "generator" in sampler_args:
+                gen = torch.Generator()
+                gen.manual_seed(configs["random_seed"])
+                sampler_args["generator"] = gen
+            if task == 'train':
+                task_dataset = train_subset
+            else:
+                task_dataset = val_subset
+            sampler = sampler_class(task_dataset, **sampler_args)
+        if task == 'train':
+            train_sampler = sampler
+        else:
+            val_sampler = sampler
 
     train_loader = torch.utils.data.DataLoader(
         train_subset,
@@ -755,16 +769,6 @@ def create_split_loaders(configs, split):
         num_workers=dataset_info["loader_args"]["num_workers"],
         worker_init_fn=module.encode_worker_init_fn,
         sampler=train_sampler,
-    )
-
-    val_sampler_class = getattr(module, dataset_info["train_sampler_class"])
-    gen = torch.Generator()
-    gen.manual_seed(configs["random_seed"])
-
-    val_sampler = val_sampler_class(
-        val_subset, 
-        replacement=dataset_info["train_sampler_args"]['replacement'],
-        generator=gen
     )
 
     val_loader = torch.utils.data.DataLoader(
