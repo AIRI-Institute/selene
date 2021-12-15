@@ -8,7 +8,7 @@ from .target import Target
 class qSeqMemMapFeatures(Target):
     """
     Stores the dataset specifying sequence regions and features.
-    Accepts a path to directory containing bigWig files with feature values
+    Accepts a path to directory containing mammap files with feature values
 
     Parameters
     ----------
@@ -106,4 +106,4 @@ class qSeqMemMapFeatures(Target):
             in the i-th bin of interval corresponding to sample `sample_idx`.
 
         """
-        return self.memmaps[chrom][sample_idx][self.track_idxs].T
+        return self.memmaps[chrom][self.track_idxs,sample_idx].T
