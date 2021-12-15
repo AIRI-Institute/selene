@@ -24,7 +24,7 @@ class qGenomicFeatures(Target):
 
     Attributes
     ----------
-    features : list(str)
+    tracks : list(str)
         non-redundant feature names.
     n_features : int
         The number of distinct features.
@@ -37,16 +37,16 @@ class qGenomicFeatures(Target):
         Constructs a new `qGenomicFeatures` object.
         """
 
-        self.features =  features
+        self.tracks =  features
         self.agg_function = agg_function
         self._feature_handlers = {}
-        feature_path = dict(
+        features_path = dict(
                 [line.strip().split("\t") \
-                    for line in open(self.feature_paths_file)
+                    for line in open(feature_paths_file)
                     ]
             )
-        feature_path = [feature_path[feature] \
-                            for feature in self.distinct_features]
+        features_path = [features_path[feature] \
+                            for feature in self.tracks]
 
         for i,j in zip(features,features_path):
             try:
@@ -84,7 +84,7 @@ class qGenomicFeatures(Target):
 
         try:
             results = np.array([self._feature_handlers[i].stats(chrom, start, end, type=self.agg_function)[0] \
-                                                                                    for i in self.features])
+                                                                                    for i in self.tracks])
             return results
         except Exception:
             print(traceback.format_exc())
