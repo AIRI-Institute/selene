@@ -2,6 +2,11 @@
 
 ---
 
+### Disclaimer:
+All modification of the [original selene code](https://github.com/FunctionLab/selene/) are provided under [AIRI License BY-NC-SA v.1](AIRI_BY-NC-SA_License_v.1_en.docx)
+
+---
+
 Selene is a Python library and command line interface for training deep neural networks from biological sequence data such as genomes.
 
 ## Installation
