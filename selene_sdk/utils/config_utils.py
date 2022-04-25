@@ -22,7 +22,7 @@ def class_instantiate(classobj):
     """
     for attr, obj in classobj.__dict__.items():
         is_module = getattr(obj, "__module__", None)
-        if is_module and "selene_sdk" in is_module and attr is not "model":
+        if is_module and "selene_sdk" in is_module and attr != "model":
             class_instantiate(obj)
     classobj.__init__(**classobj.__dict__)
 
@@ -83,6 +83,7 @@ def initialize_model(model_configs, loss_configs=None, train=True, lr=None):
     train : bool, optional
         Default is True. If `train`, returns the user-specified optimizer
         and optimizer class that can be found within the input model file.
+        Also if train is False, criterion will be set to None
     lr : float or None, optional
         If `train`, a learning rate must be specified. Otherwise, None.
 
@@ -123,11 +124,14 @@ def initialize_model(model_configs, loss_configs=None, train=True, lr=None):
         model = NonStrandSpecific(model, mode=model_configs["non_strand_specific"])
 
     _is_lua_trained_model(model)
+    
     if loss_configs is not None:
         criterion = instantiate(loss_configs)
         #criterion = module.criterion(**loss_configs)
-    else:
+    elif train:
         criterion = module.criterion()
+    else:
+        criterion = None # set criterion to None if we are not going to train
     if train and isinstance(lr, float):
         optim_class, optim_kwargs = module.get_optimizer(lr)
         return model, criterion, optim_class, optim_kwargs
@@ -437,6 +441,17 @@ def execute(operations, configs, output_dir):
                     )
                 for filepath in vareff_info.pop("vcf_files"):
                     analyze_seqs.variant_effect_prediction(filepath, **vareff_info)
+            if "tsv_prediction" in configs:
+                vareff_info = configs["tsv_prediction"]
+                if "tsv_files" not in vareff_info:
+                    raise ValueError(
+                        "variant effect prediction requires "
+                        "as input a list of 1 or more *.vcf "
+                        "files ('tsv_files')."
+                    )
+                for filepath in vareff_info.pop("tsv_files"):
+                    analyze_seqs.annotate_tsv_with_predictions(filepath, **vareff_info)
+
             if "in_silico_mutagenesis" in configs:
                 ism_info = configs["in_silico_mutagenesis"]
                 if "sequence" in ism_info:

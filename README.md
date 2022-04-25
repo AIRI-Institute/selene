@@ -2,7 +2,7 @@
 
 ---
 ### Disclaimer:
-All modification of the [original selene code](https://github.com/FunctionLab/selene/) are provided under [AIRI License BY-NC-SA v.1](AIRI_BY-NC-SA_License_v.1_en.docx)
+All modification of the [original selene code](https://github.com/FunctionLab/selene/) are provided under [Apache License, Version 2.0](https://opensource.org/licenses/Apache-2.0)
 
 ## Installation
 
