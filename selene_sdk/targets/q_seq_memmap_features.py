@@ -61,7 +61,7 @@ class qSeqMemMapFeatures(Target):
             self.memmaps[chrom] = np.memmap(
                 target_path, 
                 dtype='float32', 
-                mode='r+', 
+                mode='r', 
                 shape=self.memmap_shapes[chrom]
             )
 
