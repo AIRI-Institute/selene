@@ -32,7 +32,7 @@ class qGenomicFeatures(Target):
         Aggregation function used for quantitative features
     """
 
-    def __init__(self, features, feature_paths_file, agg_function):
+    def __init__(self, features, features_path, agg_function="max"):
         """
         Constructs a new `qGenomicFeatures` object.
         """
@@ -40,20 +40,20 @@ class qGenomicFeatures(Target):
         self.tracks =  features
         self.agg_function = agg_function
         self._feature_handlers = {}
-        features_path = dict(
-                [line.strip().split("\t") \
-                    for line in open(feature_paths_file)
-                    ]
-            )
-        features_path = [features_path[feature] \
-                            for feature in self.tracks]
+        # features_path = dict(
+        #         [line.strip().split("\t") \
+        #             for line in open(feature_paths_file)
+        #             ]
+        #     )
+        # features_path = [features_path[feature] \
+        #                     for feature in self.tracks]
 
         for i,j in zip(features,features_path):
             try:
                 self._feature_handlers[i] = pyBigWig.open(j)
             except Exception:
                 print(traceback.format_exc())
-                print ("Error dataset ",i," from file ",j)
+                print ("Error dataset ",i," (#",len(self._feature_handlers),") from file ",j)
                 sys.exit()
 
 
