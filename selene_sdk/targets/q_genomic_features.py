@@ -1,4 +1,6 @@
 import pyBigWig
+import traceback
+import sys
 import numpy as np
 from .target import Target
 
@@ -10,28 +12,51 @@ class qGenomicFeatures(Target):
     Parameters
     ----------
     features : list(str)
-        non-redundant feature names
-    features_path : list(str)
-        locations of corresponding bigWig files
+        non-redundant track names
+    feature_paths_file : str
+        tab-delimited file which allows to find correspondence between
+        feature(=track) name and path to bigWig file with data for
+        this track 
+    agg_function : str
+        aggregation function used for quantitative features, defines how
+        to aggregate feature values across target genomic interval
+        should be one of pyBigWig-supported aggregation functions
 
     Attributes
     ----------
-    features : list(str)
+    tracks : list(str)
         non-redundant feature names.
     n_features : int
         The number of distinct features.
+    agg_function : str
+        Aggregation function used for quantitative features
     """
 
-    def __init__(self, features, features_path):
+    def __init__(self, features, feature_paths_file, agg_function):
         """
         Constructs a new `qGenomicFeatures` object.
         """
 
-        self.features =  features
+        self.tracks =  features
+        self.agg_function = agg_function
         self._feature_handlers = {}
-        self._feature_handlers = {i: pyBigWig.open(j) \
-                                            for i,j in zip(features,features_path)
-                                      }
+        features_path = dict(
+                [line.strip().split("\t") \
+                    for line in open(feature_paths_file)
+                    ]
+            )
+        features_path = [features_path[feature] \
+                            for feature in self.tracks]
+
+        for i,j in zip(features,features_path):
+            try:
+                self._feature_handlers[i] = pyBigWig.open(j)
+            except Exception:
+                print(traceback.format_exc())
+                print ("Error dataset ",i," from file ",j)
+                sys.exit()
+
+
     def get_feature_data(self, chrom, start, end):
         """
         For a sequence of length :math:`L = end - start`, return the
@@ -58,10 +83,10 @@ class qGenomicFeatures(Target):
         """
 
         try:
-            results = np.array([self._feature_handlers[i].stats(chrom, start, end, type="max")[0] \
-                                                                                    for i in self.features])
+            results = np.array([self._feature_handlers[i].stats(chrom, start, end, type=self.agg_function)[0] \
+                                                                                    for i in self.tracks])
             return results
-        except:
+        except Exception:
+            print(traceback.format_exc())
             print ("Error loading data on position ",chrom,start,end)
-            import sys
             sys.exit()

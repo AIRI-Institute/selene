@@ -185,23 +185,25 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             if prefix+"_intervals_path" in dataset_info:
                 with open(dataset_info[prefix+"_intervals_path"]) as f:
                     for line in f:
-                        chrom, start, end = line.rstrip().split("\t")[:3]
-                        start = int(start)
-                        end = int(end)
-                        intervals[prefix].append((chrom, start, end))
+                        split_line = line.rstrip().split("\t")
+                        chrom = split_line[0]
+                        interval_info = list(map(int, split_line[1:]))
+                        interval_info = (chrom, *interval_info)
+                        intervals[prefix].append(interval_info)
 
         if "sampling_intervals_path" in dataset_info.keys():
             with open(dataset_info["sampling_intervals_path"]) as f:
                 for line in f:
-                    chrom, start, end = line.rstrip().split("\t")[:3]
-                    start = int(start)
-                    end = int(end)
+                    split_line = line.rstrip().split("\t")
+                    chrom = split_line[0]
+                    interval_info = list(map(int, split_line[1:]))
+                    interval_info = (chrom, *interval_info)
                     if load_train_val and chrom in dataset_info["validation_holdout"]:
-                        intervals["validation"].append((chrom, start, end))
+                        intervals["validation"].append(interval_info)
                     elif load_test and chrom in dataset_info["test_holdout"]:
-                        intervals["test"].append((chrom, start, end))
+                        intervals["test"].append(interval_info)
                     elif load_train_val:
-                        intervals["train"].append((chrom, start, end))
+                        intervals["train"].append(interval_info)
 
         with open(dataset_info["distinct_features_path"]) as f:
             distinct_features = list(map(lambda x: x.rstrip(), f.readlines()))
@@ -237,7 +239,6 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             task_dataset = dataset_class(**task_config)
 
             # create sampler
-            sampler = None
             if task+"_sampler_class" in dataset_info:
                 sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
                 if task+"_sampler_args" not in dataset_info:
@@ -249,14 +250,17 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     gen.manual_seed(configs["random_seed"])
                     sampler_args["generator"] = gen
                 sampler = sampler_class(task_dataset, **sampler_args)
+            else:
+                gen = torch.Generator()
+                gen.manual_seed(configs["random_seed"])
+                sampler = torch.utils.data.RandomSampler(task_dataset,
+                                                        generator=gen)
 
             task_loader = torch.utils.data.DataLoader(
                     task_dataset,
-                    batch_size=dataset_info["loader_args"]["batch_size"],
-                    num_workers=dataset_info["loader_args"]["num_workers"],
                     worker_init_fn=module.encode_worker_init_fn,
                     sampler=sampler,
-                    drop_last=True
+                    **dataset_info["loader_args"],
                 )
             loaders.append(task_loader)
 
@@ -736,14 +740,28 @@ def create_split_loaders(configs, split):
     else:
         module = module_from_file(dataset_info["path"])
 
-    train_sampler_class = getattr(module, dataset_info["train_sampler_class"])
-    gen = torch.Generator()
-    gen.manual_seed(configs["random_seed"])
-    train_sampler = train_sampler_class(
-        train_subset, 
-        replacement=dataset_info["train_sampler_args"]['replacement'], 
-        generator=gen
-    )
+    # create sampler
+    for task in ('train', 'validation'):
+        sampler = None
+        if task + "_sampler_class" in dataset_info:
+            sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
+            if task+"_sampler_args" not in dataset_info:
+                sampler_args = {}
+            else:
+                sampler_args = dataset_info[task+"_sampler_args"]
+            if not "generator" in sampler_args:
+                gen = torch.Generator()
+                gen.manual_seed(configs["random_seed"])
+                sampler_args["generator"] = gen
+            if task == 'train':
+                task_dataset = train_subset
+            else:
+                task_dataset = val_subset
+            sampler = sampler_class(task_dataset, **sampler_args)
+        if task == 'train':
+            train_sampler = sampler
+        else:
+            val_sampler = sampler
 
     train_loader = torch.utils.data.DataLoader(
         train_subset,
@@ -751,16 +769,6 @@ def create_split_loaders(configs, split):
         num_workers=dataset_info["loader_args"]["num_workers"],
         worker_init_fn=module.encode_worker_init_fn,
         sampler=train_sampler,
-    )
-
-    val_sampler_class = getattr(module, dataset_info["train_sampler_class"])
-    gen = torch.Generator()
-    gen.manual_seed(configs["random_seed"])
-
-    val_sampler = val_sampler_class(
-        val_subset, 
-        replacement=dataset_info["train_sampler_args"]['replacement'],
-        generator=gen
     )
 
     val_loader = torch.utils.data.DataLoader(

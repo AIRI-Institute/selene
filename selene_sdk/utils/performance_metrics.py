@@ -5,6 +5,8 @@ functionality for tracking and computing model performance.
 from collections import defaultdict, namedtuple
 import logging
 import os
+import warnings
+import pandas as pd
 
 import numpy as np
 from sklearn.metrics import average_precision_score
@@ -26,6 +28,8 @@ Parameters
 ----------
 fn : types.FunctionType
     A metric.
+transfrom : types.FunctionType
+    A transform function which should be applied to data before measuring metric
 data : list(float)
     A list holding the results from applying the metric.
 
@@ -33,6 +37,8 @@ Attributes
 ----------
 fn : types.FunctionType
     A metric.
+transfrom : types.FunctionType
+    A transform function which should be applied to data before measuring metric
 data : list(float)
     A list holding the results from applying the metric.
 
@@ -224,33 +230,53 @@ def compute_score(prediction, target, metric_fn, target_mask=None,
         no features meeting our filtering thresholds, will return
         `(None, [])`.
     """
-    feature_scores = np.ones(target.shape[-1]) * np.nan
+    # prediction_shape:
+    # batch_size*n_batches, n_cell_types, n_features
     n_features = prediction.shape[-1]
-    for index in range(n_features):
-        feature_preds = prediction[..., index]
-        feature_targets = target[..., index]
-        if target_mask is not None:
-            feature_mask = target_mask[..., index]
-            # if mask is n_samples x n_cell_types,
-            # feature_targets and feature_preds get flattened but that's ok
-            # b/c each item is a separate sample anyway
-            feature_targets = feature_targets[feature_mask, ...]
-            feature_preds = feature_preds[feature_mask, ...]
-        if len(np.unique(feature_targets)) > 0 and \
-               np.count_nonzero(feature_targets) > report_gt_feature_n_positives:
-            try:
-                feature_scores[index] = metric_fn(
-                    feature_targets, feature_preds)
-            except ValueError:  # do I need to make this more generic?
-                continue
-    valid_feature_scores = [s for s in feature_scores if not np.isnan(s)] # Allow 0 or negative values.
-    if not valid_feature_scores:
-        return None, feature_scores
-    average_score = np.average(valid_feature_scores)
-    return average_score, feature_scores
+    n_cell_types = prediction.shape[1]
 
+    track_scores = np.ones(shape=(n_cell_types,n_features)) * np.nan
+  
+    for feature_index in range(n_features):
+        for cell_type_index in range(n_cell_types):
+            feature_preds = np.ravel(prediction[:, cell_type_index, feature_index])
+            feature_targets = np.ravel(target[:, cell_type_index, feature_index])
+            if target_mask is not None:
+                track_masks_arr = target_mask[:, cell_type_index, feature_index]
+                
+                # we assume that if track is masked, it is masked for all sequences
+                track_mask = np.ravel(track_masks_arr)[0]
+                assert np.all(track_masks_arr==track_mask)
+                
+                if not track_mask: # track was not measured or is masked
+                    # should put nan into feature_scores: 
+                    # feature_scores[cell_type_index,feature_index] = np.nan
+                    # but it's already filled with nans so just continue
+                    continue
+            if len(np.unique(feature_targets)) > 0 and \
+                np.count_nonzero(feature_targets) > report_gt_feature_n_positives:
+                try:
+                    track_scores[cell_type_index,feature_index] = metric_fn(
+                        feature_targets, feature_preds)
+                except ValueError:  # do I need to make this more generic?
+                    continue
+    
+    # now we compute average score for all features
+    # if all elements of feature_scores are nans
+    # following will produce warning and return np.nan, 
+    # which we just ignore
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        average_score = np.nanmean(track_scores)
+    if np.isnan(average_score):
+        return None, track_scores
+    else:
+        return average_score, track_scores
 
-def get_feature_specific_scores(data, get_feature_from_index_fn):
+def get_feature_specific_scores(data, 
+                                get_feature_from_index_fn,
+                                get_ct_from_index_fn):
     """
     Generates a dictionary mapping feature names to feature scores from
     an intermediate representation.
@@ -262,6 +288,9 @@ def get_feature_specific_scores(data, get_feature_from_index_fn):
         and the score for that feature.
     get_feature_from_index_fn : types.FunctionType
         A function that takes an index (`int`) and returns a feature
+        name (`str`).
+    get_ct_from_index_fn : types.FunctionType
+        A function that takes an index (`int`) and returns a cell type
         name (`str`).
 
     Returns
@@ -319,6 +348,9 @@ class PerformanceMetrics(object):
     get_feature_from_index_fn : types.FunctionType
         A function that takes an index (`int`) and returns a feature
         name (`str`).
+    get_ct_from_index_fn : types.FunctionType
+        A function that takes an index (`int`) and returns a cell type
+        name (`str`).
     report_gt_feature_n_positives : int, optional
         Default is 10. The minimum number of positive examples for a
         feature in order to compute the score for it.
@@ -339,17 +371,21 @@ class PerformanceMetrics(object):
     get_feature_from_index : types.FunctionType
         A function that takes an index (`int`) and returns a feature
         name (`str`).
+    get_feature_from_index : types.FunctionType
+        A function that takes an index (`int`) and returns a cell type
+        name (`str`).
     metrics : dict
         A dictionary that maps metric names (`str`) to metric objects
         (`Metric`). By default, this contains `"roc_auc"` and
         `"average_precision"`.
     metrics_transforms: dict
-        A dictioary mapping metrics name to transformation function,
+        A dictionary mapping metrics name to transformation function,
         which should be applied tp to data prior to metrics computation.
     """
 
     def __init__(self,
                  get_feature_from_index_fn,
+                 get_ct_from_index_fn,
                  report_gt_feature_n_positives=10,
                  metrics=dict(roc_auc=roc_auc_score, average_precision=average_precision_score),
                  metrics_transforms=dict(roc_auc=None, 
@@ -359,6 +395,7 @@ class PerformanceMetrics(object):
         """
         self.skip_threshold = report_gt_feature_n_positives
         self.get_feature_from_index = get_feature_from_index_fn
+        self.get_ct_from_index = get_ct_from_index_fn
         self.metrics = dict()
         for k, v in metrics.items():
             if k in metrics_transforms:
@@ -439,11 +476,11 @@ class PerformanceMetrics(object):
                 tr_prediction, tr_target, tr_target_mask = metric.transform((prediction, target, target_mask))
             else:
                 tr_prediction, tr_target, tr_target_mask = prediction, target, target_mask
-            assert tr_prediction.shape == tr_target.shape == tr_target_mask.shape
-            avg_score, feature_scores = compute_score(
+            assert tr_prediction.shape == tr_target.shape == tr_target_mask.shape, "shape of prediction, target and mask are not equal: "+"\n".join(map(str,[tr_prediction.shape,tr_target.shape,tr_target_mask.shape]))
+            avg_score, track_scores = compute_score(
                 tr_prediction, tr_target, metric.fn, target_mask=tr_target_mask,
                 report_gt_feature_n_positives=self.skip_threshold)
-            metric.data.append(feature_scores)
+            metric.data.append(track_scores)
             metric_scores[name] = avg_score
         return metric_scores
 
@@ -504,34 +541,31 @@ class PerformanceMetrics(object):
 
         Returns
         -------
-        dict
-            A dictionary mapping feature names (`str`) to
-            sub-dictionaries (`dict`). Each sub-dictionary then maps
-            metric names (`str`) to the score for that metric on the
-            given feature. If a metric was not evaluated on a given
-            feature, the score will be `None`.
+        pd.DataFeame
+            A dataFrame with columns:
+            cell_type,feature,metric_name,value
 
         """
         feature_scores = defaultdict(dict)
+        full_metrics_results = []
         for name, metric in self.metrics.items():
-            feature_score_dict = get_feature_specific_scores(
-                metric.data[-1], self.get_feature_from_index)
-            for feature, score in feature_score_dict.items():
-                if score is None:
-                    feature_scores[feature] = None
-                else:
-                    feature_scores[feature][name] = score
+            # metric.data contains n_cell_type x n_features array
+            # of metric value computed for track[i,j]
+            n_cell_types = metric.data[-1].shape[0]
+            n_features = metric.data[-1].shape[1]
+            cell_type_names = [self.get_ct_from_index(ct) for ct in range(n_cell_types)]
+            feature_names = [self.get_feature_from_index(f) for f in range(n_features)]
 
-        metric_cols = [m for m in self.metrics.keys()]
-        cols = '\t'.join(["class"] + metric_cols)
-        with open(output_path, 'w+') as file_handle:
-            file_handle.write("{0}\n".format(cols))
-            for feature, metric_scores in sorted(feature_scores.items()):
-                if not metric_scores:
-                    file_handle.write("{0}\t{1}\n".format(feature, "\t".join(["NA"] * len(metric_cols))))
-                else:
-                    metric_score_cols = '\t'.join(
-                        ["{0:.4f}".format(s) for s in metric_scores.values()])
-                    file_handle.write("{0}\t{1}\n".format(feature,
-                                                          metric_score_cols))
-        return feature_scores
+            metric_df = pd.DataFrame(metric.data[-1],
+                                        index=cell_type_names,
+                                        columns=feature_names).reset_index()
+            metric_df = pd.melt(metric_df, id_vars='index').rename(
+                columns={"index":"cell_type","variable":"feature"}
+            )
+            metric_df["metric_name"] = [name]*len(metric_df)
+            full_metrics_results.append(metric_df) 
+        full_metrics_results = pd.concat(full_metrics_results)
+        full_metrics_results[["metric_name","cell_type","feature","value"]].to_csv(output_path, 
+                                        sep="\t", index=False)
+
+        return full_metrics_results
