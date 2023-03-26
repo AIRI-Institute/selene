@@ -6,6 +6,7 @@ running operations in _Selene_.
 import os
 import importlib
 import sys
+import json
 from time import strftime
 import types
 import numpy as np
@@ -241,7 +242,7 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                 transform = instantiate(dataset_info[task+"_transform"])
                 task_config["transform"] = transform
             task_dataset = dataset_class(**task_config)
-
+            
             # create sampler
             if task+"_sampler_class" in dataset_info:
                 sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
@@ -600,6 +601,11 @@ def parse_configs_and_run(configs, configs_path, create_subdirectory=True, lr=No
             )
             os.makedirs(current_run_output_dir)
         print("Outputs and logs saved to {0}".format(current_run_output_dir))
+        config_copy_file = "{0}-config.json.log".format(
+                            strftime("%m%d%H%M%S")
+                        )
+        with open(os.path.join(current_run_output_dir, config_copy_file), "w") as conffile:
+            conffile.write(json.dumps(configs,indent=4,default=str))
 
     if "random_seed" in configs:
         seed = configs["random_seed"]
