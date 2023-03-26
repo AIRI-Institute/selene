@@ -14,6 +14,12 @@ from .sequence import Sequence
 from .sequence import sequence_to_encoding
 from .sequence import encoding_to_sequence
 
+from dnalm.src.gena_lm.utils import (concatenate_encodings,
+                               get_service_token_encodings,
+                               symmetric_pad_and_truncate_context)
+
+from transformers import AutoTokenizer
+
 def _not_blacklist_region(chrom, start, end, blacklist_tabix):
     """
     Check if the input coordinates are not overlapping with blacklist regions.
@@ -547,3 +553,176 @@ class Genome(Sequence):
 
         """
         return encoding_to_sequence(encoding, cls.BASES_ARR, cls.UNK_BASE)
+
+
+class TokenizedGenome(Genome):
+    def __init__(self, input_path, tokenizer_path, max_seq_len, blacklist_regions=None):
+        """
+        Constructs a `Genome` object.
+        """
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.max_seq_len = max_seq_len
+        self.service_token_encodings = get_service_token_encodings(self.tokenizer)
+        super(TokenizedGenome, self).__init__(input_path=input_path,
+                                                 blacklist_regions=blacklist_regions)
+    
+    @classmethod
+    def update_bases_order(cls, bases):
+        raise NotImplementedError
+
+
+    def _genome_sequence(self, chrom, start, end, strand='+'):
+        if strand == '+' or strand == '.':
+            return self.genome[chrom][start:end].seq
+        else:
+            return self.genome[chrom][start:end].reverse.complement.seq
+
+
+    def coords_in_bounds(self, chrom, start, end):
+        """
+        Check if the region we want to query is within the bounds of the
+        queried chromosome and non-overlapping with blacklist regions
+        (if given).
+
+        Parameters
+        ----------
+        chrom : str
+            The name of the chromosomes, e.g. "chr1".
+        start : int
+            The 0-based start coordinate of the sequence.
+        end : int
+            One past the 0-based last position in the sequence.
+
+        Returns
+        -------
+        bool
+            Whether we can retrieve a sequence from the bounds specified
+            in the input.
+
+        """
+        return _check_coords(self.len_chrs,
+                             chrom,
+                             start,
+                             end,
+                             blacklist_tabix=self._blacklist_tabix)
+
+    def get_sequence_from_coords(self,
+                                 chrom,
+                                 start,
+                                 end,
+                                 strand='+',
+                                 pad=False):
+        """
+        Gets the queried chromosome's sequence at the input coordinates.
+
+        Parameters
+        ----------
+        chrom : str
+            The name of the chromosomes, e.g. "chr1".
+        start : int
+            The 0-based start coordinate of the sequence.
+        end : int
+            One past the 0-based last position in the sequence.
+        strand : {'+', '-', '.'}, optional
+            Default is '+'. The strand the sequence is located on. '.' is
+            treated as '.'.
+        """
+        return _get_sequence_from_coords(self.len_chrs,
+                                         self._genome_sequence,
+                                         chrom,
+                                         start,
+                                         end,
+                                         strand=strand,
+                                         pad=pad,
+                                         blacklist_tabix=self._blacklist_tabix)
+
+    def get_encoding_from_coords_check_unk(self,
+                                 chrom,
+                                 start,
+                                 end,
+                                 strand='+',
+                                 pad=False):
+        sequence = self.get_sequence_from_coords(
+            chrom, start, end, strand=strand, pad=pad)
+        encoding = self.sequence_to_encoding(sequence)
+        return encoding
+ 
+    def sequence_to_encoding(self, sequence):
+        """Converts an input sequence to its one-hot encoding.
+
+        Parameters
+        ----------
+        sequence : str
+            A nucleotide sequence of length :math:`L`
+
+        Returns
+        -------
+        features: dict
+            features including input_ids and etc.
+
+        """
+        if sequence == "":
+            return None
+        
+        features = self.tokenizer(
+            sequence, add_special_tokens=False, padding=False, truncation=False, return_tensors="np"
+        )
+        _, _, features, padding = symmetric_pad_and_truncate_context(
+            left_encoding=None,
+            right_encoding=None,
+            mid_encoding=features,
+            n_service_tokens=2,
+            max_seq_len=self.max_seq_len,
+            PAD_id=self.tokenizer.pad_token_id,
+        )
+        features = concatenate_encodings(
+            [
+                self.service_token_encodings["CLS"],
+                features,
+                self.service_token_encodings["SEP"],
+                padding,
+            ]
+        )
+
+        # return features generated by tokenizer and labels
+        for fn in features:
+            features[fn] = features[fn][0]
+        # features["labels"] = targets.astype(np.float32)
+        return features
+
+    @classmethod
+    def encoding_to_sequence(cls, encoding):
+        """Converts an input one-hot encoding to its DNA sequence.
+
+        Parameters
+        ----------
+        encoding : numpy.ndarray, dtype=numpy.float32
+            An :math:`L \\times 4` one-hot encoding of the sequence,
+            where :math:`L` is the length of the output sequence.
+
+        Returns
+        -------
+        str
+            The sequence of :math:`L` nucleotides decoded from the
+            input array.
+
+        """
+        raise NotImplementedError   
+    def encoding_to_sequence(cls, encoding):
+        """Converts an input one-hot encoding to its DNA sequence.
+
+        Parameters
+        ----------
+        encoding : numpy.ndarray, dtype=numpy.float32
+            An :math:`L \\times 4` one-hot encoding of the sequence,
+            where :math:`L` is the length of the output sequence.
+
+        Returns
+        -------
+        str
+            The sequence of :math:`L` nucleotides decoded from the
+            input array.
+
+        """
+        raise NotImplementedError
+
