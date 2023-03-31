@@ -13,9 +13,16 @@ import numpy as np
 import random
 import torch
 from torch.utils.tensorboard import SummaryWriter
+import hashlib
 
 from . import _is_lua_trained_model
 from . import instantiate
+
+def get_datasethash(dataset_info):
+    dataset_hash = "".join([str(i)+str(j) for i,j in dataset_info.items() \
+                            if i != "hashdir" 
+                            ])
+    return hashlib.sha256(dataset_hash.encode()).hexdigest()
 
 
 def class_instantiate(classobj):
@@ -241,6 +248,20 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                 # load transforms
                 transform = instantiate(dataset_info[task+"_transform"])
                 task_config["transform"] = transform
+            
+            if "hashdir" in dataset_info.keys():
+                hash = get_datasethash(dataset_info)
+                ds_file = os.path.join(dataset_info["hashdir"],
+                                                    "ds_"+task+"_"+hash+".hdf5"
+                                                    )
+                if not os.path.exists(ds_file):
+                    print ("Relevant dataset not found: ")
+                    print ("Hash dir: ",dataset_info["hashdir"])
+                    print ("Hash file name: ","ds_"+task+"_"+hash+".hdf5")
+                    raise ValueError
+                else:
+                    task_config["cash_file_path"] = ds_file
+
             task_dataset = dataset_class(**task_config)
             
             # create sampler
@@ -317,6 +338,29 @@ def execute(operations, configs, output_dir):
             test_loader = create_data_source(configs, load_train_val=False,
                                              load_test=True)
     for op in operations:
+        if op == "export_dataset":
+            dataset_info = configs["dataset"]
+            load_train_and_val = "validation_holdout" in dataset_info.keys()
+            load_test = "test_holdout" in dataset_info.keys()
+            loaders = create_data_source(configs, load_train_val=load_train_and_val,
+                                         load_test=load_test)
+            assert len(loaders) == load_train_and_val*2 + load_test
+            loader_dict = {}
+            if load_train_and_val:
+                loader_dict = {"train":loaders[0],
+                               "validation":loaders[1]
+                                }
+            if load_test:
+                loader_dict["test"] = loaders[-1]
+
+            hash = get_datasethash(dataset_info)
+
+            for loader_name,loader in loader_dict.items():
+                output_file = os.path.join(configs["output_dir"],"ds_"+loader_name+"_"+hash+".hdf5")
+
+                loader.dataset.export(fname = output_file, 
+                                      fmode="w", 
+                                      )
         if op == "train":
             if "ct_masked_train" in operations:
                 model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
