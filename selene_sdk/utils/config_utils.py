@@ -14,6 +14,7 @@ import random
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import hashlib
+import inspect
 
 from . import _is_lua_trained_model
 from . import instantiate
@@ -266,7 +267,10 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
             
             # create sampler
             if task+"_sampler_class" in dataset_info:
-                sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
+                if isinstance (dataset_info[task+"_sampler_class"], type):
+                    sampler_class = dataset_info[task+"_sampler_class"]
+                else:
+                    sampler_class = getattr(module, dataset_info[task+"_sampler_class"])
                 if task+"_sampler_args" not in dataset_info:
                     sampler_args = {}
                 else:
@@ -275,7 +279,13 @@ def create_data_source(configs, output_dir=None, load_train_val=True, load_test=
                     gen = torch.Generator()
                     gen.manual_seed(configs["random_seed"])
                     sampler_args["generator"] = gen
-                sampler = sampler_class(task_dataset, **sampler_args)
+                    try:
+                        sampler = sampler_class(task_dataset, **sampler_args)
+                    except TypeError: # some samplers do not require generator
+                        del sampler_args["generator"]
+                        sampler = sampler_class(task_dataset, **sampler_args)
+                else:
+                    sampler = sampler_class(task_dataset, **sampler_args)
             else:
                 gen = torch.Generator()
                 gen.manual_seed(configs["random_seed"])
@@ -325,7 +335,7 @@ def execute(operations, configs, output_dir):
     model = None
     train_model = None
     if "dataset" in configs:
-        if "train" in operations and "evaluate" in operations:
+        if ("train" in operations and "evaluate") or ("export_dataset" in operations):
             train_loader, val_loader, test_loader = create_data_source(configs,
                                                                        output_dir)
         elif "train" in operations:
@@ -338,30 +348,9 @@ def execute(operations, configs, output_dir):
             test_loader = create_data_source(configs, load_train_val=False,
                                              load_test=True)
     for op in operations:
-        if op == "export_dataset":
-            dataset_info = configs["dataset"]
-            load_train_and_val = "validation_holdout" in dataset_info.keys()
-            load_test = "test_holdout" in dataset_info.keys()
-            loaders = create_data_source(configs, load_train_val=load_train_and_val,
-                                         load_test=load_test)
-            assert len(loaders) == load_train_and_val*2 + load_test
-            loader_dict = {}
-            if load_train_and_val:
-                loader_dict = {"train":loaders[0],
-                               "validation":loaders[1]
-                                }
-            if load_test:
-                loader_dict["test"] = loaders[-1]
 
-            hash = get_datasethash(dataset_info)
-
-            for loader_name,loader in loader_dict.items():
-                output_file = os.path.join(configs["output_dir"],"ds_"+loader_name+"_"+hash+".hdf5")
-
-                loader.dataset.export(fname = output_file, 
-                                      fmode="w", 
-                                      )
-        if op == "train":
+        # check data structure
+        if op == "train" or op == "export_dataset":
             if "ct_masked_train" in operations:
                 model_n_cell_types = configs["model"]["class_args"]["n_cell_types"]
                 dataset_n_cell_types = configs['model']['class_args']['n_cell_types']
@@ -387,6 +376,63 @@ def execute(operations, configs, output_dir):
                     assert model_n_features == dataset_n_features, f"Expected {dataset_n_features} "\
                         f"target features based on dataset, but got {model_n_features} in config"
 
+        if op == "export_dataset":
+            info = dict(configs["dataset"])
+            export_info = configs["export"]
+            for k,v in export_info.items():
+                info["export_" + k] = v
+            
+            if "sampler" in configs:
+                raise NotImplementedError
+
+
+            if not export_info["save_seq_as_embeddings"]:
+                dataset_params_hash = get_datasethash(info)
+
+                loader_dict = {"train": train_loader,
+                                "validation": val_loader,
+                                "test" : test_loader
+                            }
+
+                for loader_name,loader in loader_dict.items():
+                    output_file = os.path.join(configs["output_dir"],
+                                                "ds_"+loader_name+"_"+dataset_params_hash+".hdf5")
+
+                    loader.dataset.export(fname = output_file, 
+                                        fmode="w", 
+                                        )
+            else:
+                # check config consistency
+                for loader in [train_loader, val_loader, test_loader]:
+                    assert isinstance(loader.sampler , torch.utils.data.SequentialSampler) 
+                assert configs["model"]["class_args"]["return_embeddings"]
+
+                for k,v in configs["model"].items():
+                    info["model_"+k] = str(v)
+
+                export_model_params = configs["export_model"][2] # 2 are kwargs send to model
+                for k,v in export_model_params.items():
+                    if k.find("checkpoint") != -1:
+                        info[k] = str(v)
+                dataset_params_hash = get_datasethash(info)
+
+                model, loss = initialize_model(configs["model"], train=False)
+                export_model_info = configs["export_model"]
+                if output_dir is not None:
+                    export_model_info.bind(output_dir=output_dir,
+                                           file_prefix=dataset_params_hash)
+                
+                export_model_info.bind(
+                        model=model,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
+                        test_loader=test_loader,
+                    )
+
+            export_model = instantiate(export_model_info)
+            export_model.export()
+
+        if op == "train":
             # load model, criterion, and optimizer
             if "criterion" in configs:
                 loss_configs = configs["criterion"]
@@ -439,7 +485,6 @@ def execute(operations, configs, output_dir):
                         checkpoint_epoch=configs['model']['checkpoint_epoch'],
                         checkpoint_chunk=configs['model']['checkpoint_chunk'],
                     )
-
                 else:
                     train_model_info.bind(
                         model=model,
